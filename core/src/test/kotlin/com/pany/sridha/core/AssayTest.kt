@@ -20,7 +20,8 @@ class AssayTest {
         assertEquals(null, DoseParser.parse("0"))
         assertEquals(null, DoseParser.parse("abc"))
         assertEquals("1:4", DoseParser.format(0.25))
-        assertEquals("0.750", DoseParser.format(0.75))
+        assertEquals("3/4", DoseParser.format(0.75))
+        assertEquals("1:100", DoseParser.format(0.01))
     }
 
     /** Diameter whose zone area is exactly linear in concentration: S = 5 + 4·C (mm²). */

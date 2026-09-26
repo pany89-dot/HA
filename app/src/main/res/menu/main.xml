@@ -7,6 +7,23 @@
         android:title="@string/results"
         app:showAsAction="always" />
     <item
+        android:id="@+id/action_find_all"
+        android:icon="@drawable/ic_auto"
+        android:title="@string/find_all"
+        app:showAsAction="always" />
+    <item
+        android:id="@+id/action_pdf"
+        android:title="@string/pdf"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_template"
+        android:title="@string/template"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_apply_template"
+        android:title="@string/apply_template"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_camera"
         android:title="@string/take_photo"
         app:showAsAction="never" />

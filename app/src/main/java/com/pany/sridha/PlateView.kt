@@ -54,6 +54,7 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
 
     private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val wellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.argb(200, 255, 255, 255) }
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 13 * density
@@ -136,6 +137,10 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
             ringPaint.color = if (sel) colSel else if (r.role == Role.STANDARD) colStd else colSmp
             ringPaint.strokeWidth = (if (sel) 2.5f else 1.6f) * density / s
             canvas.drawCircle(r.cx.toFloat(), r.cy.toFloat(), r.r.toFloat(), ringPaint)
+            r.wellR?.let { wr ->
+                wellPaint.strokeWidth = 1f * density / s
+                canvas.drawCircle(r.cx.toFloat(), r.cy.toFloat(), wr.toFloat(), wellPaint)
+            }
             // centre cross
             val c = 4 * density / s
             canvas.drawLine(r.cx.toFloat() - c, r.cy.toFloat(), r.cx.toFloat() + c, r.cy.toFloat(), ringPaint)

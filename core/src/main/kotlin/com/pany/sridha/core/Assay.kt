@@ -73,10 +73,19 @@ object DoseParser {
 
     fun format(dose: Double): String {
         if (abs(dose - 1) < 1e-9) return "1"
+        for (den in 2..16) {
+            val num = dose * den
+            val n = Math.round(num)
+            if (n in 1 until den && abs(num - n) < 1e-6 && gcd(n.toInt(), den) == 1) {
+                return if (n == 1L) "1:$den" else "$n/$den"
+            }
+        }
         val inv = 1 / dose
         if (abs(inv - Math.round(inv)) < 1e-6) return "1:${Math.round(inv)}"
         return Fmt.num(dose, 3)
     }
+
+    private fun gcd(a: Int, b: Int): Int = if (b == 0) a else gcd(b, a % b)
 }
 
 object Fmt {

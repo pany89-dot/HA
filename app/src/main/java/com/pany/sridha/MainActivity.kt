@@ -3,9 +3,6 @@ package com.pany.sridha
 import android.content.DialogInterface
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -30,8 +27,11 @@ import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.textfield.TextInputEditText
 import com.pany.sridha.core.ArgbRaster
 import com.pany.sridha.core.Channel
+import com.pany.sridha.core.Circle
 import com.pany.sridha.core.DoseParser
 import com.pany.sridha.core.Fmt
+import com.pany.sridha.core.GridAssign
+import com.pany.sridha.core.PlateScanner
 import com.pany.sridha.core.RingDetector
 import com.pany.sridha.core.Role
 import java.io.File
@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
 
         findViewById<View>(R.id.btnCamera).setOnClickListener { openCamera() }
         findViewById<View>(R.id.btnGallery).setOnClickListener { pickImage.launch("image/*") }
+        findViewById<View>(R.id.btnFindAll).setOnClickListener { findAll() }
         findViewById<View>(R.id.btnEdit).setOnClickListener { plate.selected?.let { editRing(it, isNew = false) } }
         findViewById<View>(R.id.btnDelete).setOnClickListener { plate.selected?.let { deleteRing(it) } }
         findViewById<View>(R.id.btnRefine).setOnClickListener { plate.selected?.let { refine(it) } }
@@ -132,6 +133,10 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
                 if (Session.rings.isEmpty()) toast(R.string.no_rings)
                 else startActivity(Intent(this, ResultsActivity::class.java))
             }
+            R.id.action_find_all -> findAll()
+            R.id.action_template -> templateEditor.launch(Intent(this, TemplateActivity::class.java))
+            R.id.action_apply_template -> applyTemplate(showMessage = true)
+            R.id.action_pdf -> PdfReport.start(this)
             R.id.action_camera -> openCamera()
             R.id.action_open -> pickImage.launch("image/*")
             R.id.action_settings -> showSettings()
@@ -179,7 +184,84 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
                 Session.resetForNewImage()
                 plate.setBitmap(bmp)
                 changed()
+                runScan()
             }
+        }
+    }
+
+    // ---- automatic detection of all rings ----
+
+    private fun findAll() {
+        if (Session.bitmap == null) return toast(R.string.no_image)
+        if (Session.rings.isEmpty()) { runScan(); return }
+        MaterialAlertDialogBuilder(this)
+            .setMessage(R.string.find_all_confirm)
+            .setPositiveButton(R.string.find_all) { _, _ -> runScan() }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun runScan() {
+        val bmp = Session.bitmap ?: return
+        val px = Session.pixels ?: return
+        val prefs = Session.prefs
+        showBusy(true)
+        worker.execute {
+            val channel = prefs.channel
+                ?: ArgbRaster.bestChannel(bmp.width, bmp.height, px, bmp.width / 2.0, bmp.height / 2.0, maxOf(bmp.width, bmp.height) / 2.0)
+            val found = PlateScanner().scan(ArgbRaster(bmp.width, bmp.height, px, channel), prefs.polarity.value)
+            runOnUiThread {
+                showBusy(false)
+                if (found.isEmpty()) {
+                    Snackbar.make(plate, R.string.find_all_failed, Snackbar.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                Session.rings.clear()
+                // Reading order: rows top to bottom, left to right.
+                val grid = GridAssign.assign(found.map { it.zone })
+                val order = found.indices.sortedWith(compareBy({ grid.row[it] }, { grid.col[it] }))
+                for (i in order) {
+                    val f = found[i]
+                    Session.rings += RingMark(0, f.zone.cx, f.zone.cy, f.zone.r, "Стандарт", Role.STANDARD, 1.0, f.well?.r)
+                }
+                Session.renumber()
+                plate.selected = null
+                applyTemplate(showMessage = true)
+                plate.fitToView()
+            }
+        }
+    }
+
+    private val templateEditor = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == RESULT_OK && Session.rings.isNotEmpty()) applyTemplate(showMessage = true)
+    }
+
+    /** Assigns role, name and dose to every ring from the plate layout. */
+    private fun applyTemplate(showMessage: Boolean) {
+        if (Session.rings.isEmpty()) { changed(); return }
+        val t = Session.prefs.template
+        val grid = GridAssign.assign(Session.rings.map { Circle(it.cx, it.cy, it.r) })
+        val msg: String
+        if (grid.rows == t.rows && grid.cols == t.cols) {
+            var emptyCells = 0
+            Session.rings.forEachIndexed { i, r ->
+                val c = t.cell(grid.row[i], grid.col[i])
+                if (c == null) { emptyCells++; r.group = "?"; r.role = Role.SAMPLE; r.dose = 1.0 }
+                else { r.group = t.preparations[c.prep]; r.role = t.role(c.prep); r.dose = c.dose }
+            }
+            msg = getString(R.string.template_applied, Session.rings.size, grid.rows, grid.cols) +
+                (if (emptyCells > 0) getString(R.string.template_empty_cells, emptyCells) else "")
+        } else {
+            msg = getString(R.string.template_mismatch, Session.rings.size, grid.rows, grid.cols, t.rows, t.cols)
+        }
+        changed()
+        if (showMessage) {
+            val scale = Session.scaleDescription
+            MaterialAlertDialogBuilder(this)
+                .setMessage("$msg\n\n${scale.replaceFirstChar { it.uppercase() }}.")
+                .setPositiveButton(R.string.ok, null)
+                .setNeutralButton(R.string.template) { _, _ -> templateEditor.launch(Intent(this, TemplateActivity::class.java)) }
+                .show()
         }
     }
 
@@ -194,6 +276,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
             val channel = prefs.channel ?: ArgbRaster.bestChannel(bmp.width, bmp.height, px, x, y, maxRadius)
             val raster = ArgbRaster(bmp.width, bmp.height, px, channel)
             val res = RingDetector().detect(raster, x, y, maxRadius, prefs.polarity.value)
+            val well = res?.let { PlateScanner().findWell(raster, it.circle) }
             runOnUiThread {
                 showBusy(false)
                 if (res == null) {
@@ -201,7 +284,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
                     return@runOnUiThread
                 }
                 val c = res.circle
-                addRing(c.cx, c.cy, c.r)
+                addRing(c.cx, c.cy, c.r, well?.r)
             }
         }
     }
@@ -213,9 +296,9 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         addRing(x, y, defaultRadius)
     }
 
-    private fun addRing(cx: Double, cy: Double, r: Double) {
+    private fun addRing(cx: Double, cy: Double, r: Double, wellR: Double? = null) {
         val (group, role, dose) = Session.defaultsForNew()
-        val ring = RingMark(Session.newId(), cx, cy, r, group, role, dose)
+        val ring = RingMark(Session.newId(), cx, cy, r, group, role, dose, wellR)
         Session.rings += ring
         changed()
         plate.selected = ring
@@ -241,7 +324,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
             .setPositiveButton(R.string.ok) { _, _ ->
                 val mm = input.text.toString().replace(',', '.').toDoubleOrNull()
                 if (mm != null && mm > 0) {
-                    Session.mmPerPx = mm / px
+                    Session.manualScale = mm / px
                     changed()
                 }
                 plate.mode = Mode.CALIBRATE
@@ -269,13 +352,16 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         worker.execute {
             val maxR = ring.r * 1.6 + 10
             val channel = prefs.channel ?: ArgbRaster.bestChannel(bmp.width, bmp.height, px, ring.cx, ring.cy, maxR)
-            val res = RingDetector().detect(ArgbRaster(bmp.width, bmp.height, px, channel), ring.cx, ring.cy, maxR, prefs.polarity.value)
+            val raster = ArgbRaster(bmp.width, bmp.height, px, channel)
+            val res = RingDetector().detect(raster, ring.cx, ring.cy, maxR, prefs.polarity.value)
+            val well = res?.let { PlateScanner().findWell(raster, it.circle) }
             runOnUiThread {
                 showBusy(false)
                 if (res == null) {
                     Snackbar.make(plate, R.string.detect_failed, Snackbar.LENGTH_LONG).show()
                 } else {
                     ring.cx = res.circle.cx; ring.cy = res.circle.cy; ring.r = res.circle.r
+                    if (well != null) ring.wellR = well.r
                     changed()
                 }
             }
@@ -361,7 +447,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         series.setText(p.doseSeries.joinToString("; ") { DoseParser.format(it) })
         wellD.setText(Fmt.num(p.wellDiameterMm, 2))
         subtract.isChecked = p.subtractWell
-        scale.setText(Session.mmPerPx?.let { String.format(java.util.Locale.US, "%.6f", it) } ?: "0")
+        scale.setText(Session.manualScale?.let { String.format(java.util.Locale.US, "%.6f", it) } ?: "0")
         val channels = listOf<Channel?>(null, Channel.RED, Channel.GREEN, Channel.BLUE, Channel.LUMA)
         channel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             listOf("Авто (макс. контраст)", "Красный (для синего красителя)", "Зелёный", "Синий", "Яркость"))
@@ -398,7 +484,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
                     polarity = polarities[polarity.selectedItemPosition],
                     askOnAdd = ask.isChecked,
                 )
-                Session.mmPerPx = if (sc > 0) sc else null
+                Session.manualScale = if (sc > 0) sc else null
                 Session.savePrefs(applicationContext)
                 changed()
                 dlg.dismiss()
@@ -413,7 +499,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         val bmp = Session.bitmap ?: return toast(R.string.no_image)
         showBusy(true)
         worker.execute {
-            val out = renderAnnotated(bmp)
+            val out = Annotator.render(applicationContext, bmp)
             val dir = File(cacheDir, "export").apply { mkdirs() }
             val f = File(dir, "srid_plate.jpg")
             f.outputStream().use { out.compress(Bitmap.CompressFormat.JPEG, 92, it) }
@@ -429,26 +515,6 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
                 startActivity(Intent.createChooser(send, getString(R.string.share_image)))
             }
         }
-    }
-
-    private fun renderAnnotated(src: Bitmap): Bitmap {
-        val out = src.copy(Bitmap.Config.ARGB_8888, true)
-        val c = Canvas(out)
-        val unit = maxOf(out.width, out.height) / 1000f
-        val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f * unit }
-        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = 14f * unit; color = Color.WHITE; setShadowLayer(3f * unit, 0f, 0f, Color.BLACK)
-        }
-        for (r in Session.rings) {
-            ring.color = getColor(if (r.role == Role.STANDARD) R.color.ring_standard else R.color.ring_sample)
-            c.drawCircle(r.cx.toFloat(), r.cy.toFloat(), r.r.toFloat(), ring)
-            val l1 = "#${r.id} ${r.group} ${DoseParser.format(r.dose)}"
-            val l2 = "D=${Fmt.num(Session.diameterInUnits(r), if (Session.mmPerPx != null) 2 else 0)} ${Session.unit}"
-            val y = (r.cy - r.r).toFloat()
-            c.drawText(l1, r.cx.toFloat() - text.measureText(l1) / 2, y - 20 * unit, text)
-            c.drawText(l2, r.cx.toFloat() - text.measureText(l2) / 2, y - 4 * unit, text)
-        }
-        return out
     }
 
     // ---- UI state ----
@@ -477,7 +543,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
     }
 
     private fun updateStatus() {
-        val scale = Session.mmPerPx?.let { "масштаб ${String.format(java.util.Locale.US, "%.4f", it)} мм/px" } ?: "масштаб не задан"
+        val scale = Session.scaleDescription
         val std = Session.rings.count { it.role == Role.STANDARD }
         val smp = Session.rings.size - std
         var s = "Колец: ${Session.rings.size} (ст. $std, обр. $smp) · $scale"

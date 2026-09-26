@@ -120,6 +120,12 @@
                 android:text="@string/delete" />
         </LinearLayout>
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnFindAll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/find_all" />
+
         <com.google.android.material.button.MaterialButtonToggleGroup
             android:id="@+id/modes"
             android:layout_width="match_parent"

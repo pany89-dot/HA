@@ -13,9 +13,12 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 
-/** Minimal scatter plot with optional regression lines. */
-class ChartView(ctx: Context) : View(ctx) {
-
+/** Minimal scatter plot with optional regression lines; draws on any canvas (screen or PDF). */
+class Chart(
+    val xLabel: String,
+    val yLabel: String,
+    val series: List<Series>,
+) {
     class Series(
         val name: String,
         val color: Int,
@@ -26,29 +29,13 @@ class ChartView(ctx: Context) : View(ctx) {
         val line: Triple<Double, Double, Pair<Double, Double>>? = null,
     )
 
-    var xLabel = ""
-    var yLabel = ""
-    var series: List<Series> = emptyList()
-        set(v) { field = v; invalidate() }
-
-    private val d = resources.displayMetrics.density
-    private val isDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
-        android.content.res.Configuration.UI_MODE_NIGHT_YES
-    private val fg = if (isDark) Color.rgb(230, 230, 230) else Color.rgb(40, 40, 40)
-    private val grid = if (isDark) Color.rgb(70, 70, 70) else Color.rgb(220, 220, 220)
-
-    private val axis = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fg; strokeWidth = 1.2f * d }
-    private val gridP = Paint().apply { color = grid; strokeWidth = 1f }
-    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fg; textSize = 11 * d }
-    private val pt = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 2f * d }
-    private val ln = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.8f * d }
-
-    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val w = MeasureSpec.getSize(widthMeasureSpec)
-        setMeasuredDimension(w, (w * 0.7f).toInt().coerceAtMost((360 * d).toInt()))
-    }
-
-    override fun onDraw(c: Canvas) {
+    /** @param d size of one "dp" in canvas units. */
+    fun draw(c: Canvas, width: Float, height: Float, d: Float, fg: Int, gridColor: Int) {
+        val axis = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fg; strokeWidth = 1.2f * d }
+        val gridP = Paint().apply { color = gridColor; strokeWidth = 0.5f * d }
+        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fg; textSize = 11 * d }
+        val pt = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 2f * d }
+        val ln = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.8f * d }
         val all = series.flatMap { s -> s.xs.indices.map { s.xs[it] to s.ys[it] } }.filter { it.first.isFinite() && it.second.isFinite() }
         if (all.isEmpty()) return
         val lineXs = series.mapNotNull { it.line?.third }.flatMap { listOf(it.first, it.second) }
@@ -127,5 +114,28 @@ class ChartView(ctx: Context) : View(ctx) {
             a >= 1 -> String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0")
             else -> String.format(java.util.Locale.US, "%.2f", v)
         }
+    }
+}
+
+/** On-screen wrapper around [Chart]. */
+class ChartView(ctx: Context) : View(ctx) {
+    var chart: Chart? = null
+        set(v) { field = v; invalidate() }
+
+    private val d = resources.displayMetrics.density
+    private val isDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+        android.content.res.Configuration.UI_MODE_NIGHT_YES
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = MeasureSpec.getSize(widthMeasureSpec)
+        setMeasuredDimension(w, (w * 0.7f).toInt().coerceAtMost((360 * d).toInt()))
+    }
+
+    override fun onDraw(c: Canvas) {
+        chart?.draw(
+            c, width.toFloat(), height.toFloat(), d,
+            if (isDark) Color.rgb(230, 230, 230) else Color.rgb(40, 40, 40),
+            if (isDark) Color.rgb(70, 70, 70) else Color.rgb(220, 220, 220),
+        )
     }
 }

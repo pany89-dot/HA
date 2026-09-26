@@ -22,18 +22,11 @@ import com.pany.sridha.core.DoseParser
 import com.pany.sridha.core.Fmt
 import com.pany.sridha.core.Role
 import java.io.File
-import kotlin.math.ln
 
 class ResultsActivity : AppCompatActivity() {
 
     private lateinit var result: AssayResult
     private lateinit var body: LinearLayout
-
-    private val palette = intArrayOf(
-        Color.rgb(0, 150, 200), Color.rgb(46, 160, 67), Color.rgb(156, 39, 176),
-        Color.rgb(233, 30, 99), Color.rgb(121, 85, 72), Color.rgb(96, 125, 139),
-    )
-    private val stdColor = Color.rgb(245, 124, 0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,7 +40,13 @@ class ResultsActivity : AppCompatActivity() {
             setNavigationIcon(R.drawable.ic_back)
             setNavigationOnClickListener { finish() }
             inflateMenu(R.menu.results)
-            setOnMenuItemClickListener { if (it.itemId == R.id.action_share_csv) shareCsv(); true }
+            setOnMenuItemClickListener {
+                when (it.itemId) {
+                    R.id.action_share_csv -> shareCsv()
+                    R.id.action_pdf -> PdfReport.start(this@ResultsActivity)
+                }
+                true
+            }
         }
         root.addView(toolbar)
         body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(24)) }
@@ -64,8 +63,8 @@ class ResultsActivity : AppCompatActivity() {
 
         for (w in result.warnings) body.addView(text("⚠ $w", color = getColor(R.color.warning)))
         if (Session.mmPerPx == null) {
-            body.addView(text("Масштаб не задан: диаметры в пикселях. На расчёт HA это не влияет, но вычитание лунки отключено.", italic = true))
-        }
+            body.addView(text("Масштаб не задан (лунки не найдены): диаметры в пикселях. На расчёт HA это не влияет, но вычитание лунки отключено.", italic = true))
+        } else body.addView(text(Session.scaleDescription.replaceFirstChar { it.uppercase() }, italic = true))
 
         // ---- samples ----
         body.addView(header("Содержание HA в образцах"))
@@ -98,12 +97,13 @@ class ResultsActivity : AppCompatActivity() {
             else "S = ${Fmt.num(curve.intercept, 3)} + ${Fmt.num(curve.slope, 4)}·C;  R² = ${Fmt.num(curve.r2, 4)};  n = ${curve.n}\n" +
                 "S — площадь зоны, $unit²${if (s.subtractWell) " (за вычетом лунки ${Fmt.num(s.wellDiameter)} мм)" else ""}; C — HA, мкг/мл (HA ст. = ${Fmt.num(s.standardHa)} × доза)"
         ))
-        body.addView(curveChart(), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        body.addView(ChartView(this).apply { chart = Charts.standardCurve(result, unit) },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
 
         // ---- parallel lines ----
-        if (result.samples.any { it.parallel != null }) {
+        Charts.parallelLines(result)?.let { pl ->
             body.addView(header("Параллельные линии: ln S от ln дозы"))
-            body.addView(parallelChart(), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            body.addView(ChartView(this).apply { chart = pl }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         }
 
         // ---- wells ----
@@ -122,55 +122,6 @@ class ResultsActivity : AppCompatActivity() {
         }
         body.addView(scroll(t))
         body.addView(text("* HA неразведённого образца по стандартной кривой для отдельной лунки.", italic = true))
-    }
-
-    private fun curveChart(): View {
-        val chart = ChartView(this)
-        chart.xLabel = "HA, мкг/мл"
-        chart.yLabel = "S, ${Session.unit}²"
-        val c = result.standardCurve
-        val list = ArrayList<ChartView.Series>()
-        val stdIdx = result.wells.indices.filter { result.wells[it].role == Role.STANDARD }
-        val stdX = stdIdx.map { result.settings.standardHa * result.wells[it].dose }
-        val line = if (c != null && stdX.isNotEmpty()) Triple(c.intercept, c.slope, 0.0 to stdX.max() * 1.1) else null
-        list += ChartView.Series("Стандарт", stdColor, stdX, stdIdx.map { result.responses[it] }, true, line)
-        if (c != null && c.slope > 0) {
-            result.samples.forEachIndexed { k, smp ->
-                val idx = result.wells.indices.filter { result.wells[it].role == Role.SAMPLE && result.wells[it].group == smp.group }
-                list += ChartView.Series(smp.group, palette[k % palette.size],
-                    idx.map { c.x(result.responses[it]) }, idx.map { result.responses[it] }, filled = false)
-            }
-        }
-        chart.series = list
-        return chart
-    }
-
-    private fun parallelChart(): View {
-        val chart = ChartView(this)
-        chart.xLabel = "ln (отн. доза)"
-        chart.yLabel = "ln S"
-        val list = ArrayList<ChartView.Series>()
-        fun add(name: String, color: Int, role: Role, group: String?, slope: Double?, filled: Boolean) {
-            val idx = result.wells.indices.filter {
-                val w = result.wells[it]
-                w.role == role && (group == null || w.group == group) && result.responses[it] > 0
-            }
-            if (idx.isEmpty()) return
-            val xs = idx.map { ln(result.wells[it].dose) }
-            val ys = idx.map { ln(result.responses[it]) }
-            val line = slope?.let { b ->
-                val a = ys.average() - b * xs.average()
-                Triple(a, b, xs.min() to xs.max())
-            }
-            list += ChartView.Series(name, color, xs, ys, filled, line)
-        }
-        val common = result.samples.firstNotNullOfOrNull { it.parallel }
-        add("Стандарт", stdColor, Role.STANDARD, null, common?.standardSlope, true)
-        result.samples.forEachIndexed { k, smp ->
-            add(smp.group, palette[k % palette.size], Role.SAMPLE, smp.group, smp.parallel?.commonSlope, false)
-        }
-        chart.series = list
-        return chart
     }
 
     private fun shareCsv() {

@@ -30,6 +30,12 @@
             android:label="@string/results"
             android:parentActivityName=".MainActivity" />
 
+        <activity
+            android:name=".TemplateActivity"
+            android:label="@string/template"
+            android:parentActivityName=".MainActivity"
+            android:windowSoftInputMode="adjustResize" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"
