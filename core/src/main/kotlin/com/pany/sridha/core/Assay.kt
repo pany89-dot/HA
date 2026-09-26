@@ -21,7 +21,7 @@ data class AssaySettings(
     /** HA content of the undiluted reference antigen, µg/mL. */
     val standardHa: Double = 15.0,
     /** Diameter of the punched well, same units as [Well.diameter]. */
-    val wellDiameter: Double = 3.0,
+    val wellDiameter: Double = 4.0,
     /** Subtract the well area from the zone area. */
     val subtractWell: Boolean = false,
 )

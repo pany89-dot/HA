@@ -33,7 +33,7 @@ enum class Polarity(val value: Int) { AUTO(0), DARK(1), LIGHT(-1) }
 /** Analysis parameters persisted between launches. */
 data class Prefs(
     val standardHa: Double = 15.0,
-    val wellDiameterMm: Double = 3.0,
+    val wellDiameterMm: Double = 4.0,
     val subtractWell: Boolean = false,
     val doseSeries: List<Double> = listOf(1.0, 0.75, 0.5, 0.25),
     val channel: Channel? = null, // null = automatic
@@ -181,7 +181,7 @@ object Session {
                 val o = JSONObject(f.readText())
                 prefs = Prefs(
                     standardHa = o.optDouble("standardHa", 15.0),
-                    wellDiameterMm = o.optDouble("wellDiameterMm", 3.0),
+                    wellDiameterMm = o.optDouble("wellDiameterMm", 4.0),
                     subtractWell = o.optBoolean("subtractWell", false),
                     doseSeries = parseSeries(o.optString("doseSeries")) ?: Prefs().doseSeries,
                     channel = o.optString("channel").let { n -> Channel.values().firstOrNull { it.name == n } },

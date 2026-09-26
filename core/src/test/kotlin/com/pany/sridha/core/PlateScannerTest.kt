@@ -75,7 +75,7 @@ class PlateScannerTest {
         val img = plate(discs, 520, 480, seed = 4)
         val found = PlateScanner().scan(img, 1)
         val grid = GridAssign.assign(found.map { it.zone })
-        val t = PlateTemplate.default()
+        val t = PlateTemplate.fill(4, 4, listOf("Стандарт", "Образец 1"), doses, 2, byRows = true, adjacentReplicates = false)
         val mmPerPx = 3.0 / (2 * Stats.median(found.mapNotNull { it.well?.r }))
         val wells = found.mapIndexed { i, f ->
             val c = assertNotNull(t.cell(grid.row[i], grid.col[i]))
@@ -85,6 +85,18 @@ class PlateScannerTest {
         val smp = res.samples.single()
         assertTrue(abs(smp.curveMean - 9.0) < 0.3, "curve HA ${smp.curveMean}")
         assertTrue(abs(assertNotNull(smp.parallel).ha - 9.0) < 0.3, "PL HA ${smp.parallel?.ha}")
+    }
+
+    @Test
+    fun defaultTemplateMatchesLabLayout() {
+        val t = PlateTemplate.default()
+        assertEquals(8, t.rows); assertEquals(4, t.cols)
+        // rows are 0-based here: rows 2 and 6 of the plate are the standard
+        for (r in listOf(1, 5)) assertEquals(0, t.cell(r, 0)?.prep)
+        for (r in listOf(0, 4)) assertEquals("Образец 1", t.preparations[t.cell(r, 2)!!.prep])
+        for (r in listOf(2, 6)) assertEquals("Образец 2", t.preparations[t.cell(r, 1)!!.prep])
+        for (r in listOf(3, 7)) assertEquals("Образец 3", t.preparations[t.cell(r, 3)!!.prep])
+        assertEquals(0.25, t.cell(7, 3)?.dose)
     }
 
     @Test

@@ -56,8 +56,16 @@ data class PlateTemplate(
             return PlateTemplate(rows, cols, preparations, cells)
         }
 
-        /** 4 × 4: standard in rows 1–2, one sample in rows 3–4, series 1, ¾, ½, ¼ in duplicate. */
-        fun default() = fill(4, 4, listOf("Стандарт", "Образец 1"), listOf(1.0, 0.75, 0.5, 0.25), 2, byRows = true, adjacentReplicates = false)
+        /**
+         * Laboratory default: 8 rows × 4 columns (doses 1, ¾, ½, ¼ along each row).
+         * Rows 2 and 6 — standard; rows 1 and 5 — sample 1; 3 and 7 — sample 2; 4 and 8 — sample 3.
+         */
+        fun default(): PlateTemplate {
+            val doses = listOf(1.0, 0.75, 0.5, 0.25)
+            val prepOfRow = listOf(1, 0, 2, 3, 1, 0, 2, 3)
+            val cells = prepOfRow.flatMap { p -> doses.map { TemplateCell(p, it) } }
+            return PlateTemplate(8, doses.size, listOf("Стандарт", "Образец 1", "Образец 2", "Образец 3"), cells)
+        }
     }
 }
 
