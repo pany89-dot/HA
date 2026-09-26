@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#1E4E8C</color>
+    <color name="ring_standard">#FF9800</color>
+    <color name="ring_sample">#00E5FF</color>
+    <color name="ring_selected">#FFEB3B</color>
+    <color name="calib_line">#FF4081</color>
+    <color name="launcher_bg">#1E4E8C</color>
+    <color name="warning">#C62828</color>
+</resources>
