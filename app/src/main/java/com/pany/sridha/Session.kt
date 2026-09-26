@@ -163,6 +163,9 @@ object Session {
         return true
     }
 
-    fun parseSeries(text: String): List<Double>? =
-        text.split(';', ' ', '\n').filter { it.isNotBlank() }.map { DoseParser.parse(it) ?: return null }.ifEmpty { null }
+    fun parseSeries(text: String): List<Double>? {
+        val parts = text.split(';', ' ', '\n').filter { it.isNotBlank() }
+        val doses = parts.mapNotNull { DoseParser.parse(it) }
+        return if (doses.isEmpty() || doses.size != parts.size) null else doses
+    }
 }

@@ -326,7 +326,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
                 if (isNew) { Session.rings.remove(ring); plate.selected = null; changed() }
             }
             .setNeutralButton(if (isNew) R.string.refine else R.string.delete) { _, _ ->
-                if (isNew) plate.focusOn(ring) else deleteRing(ring)
+                if (isNew) { plate.focusOn(ring); refine(ring) } else deleteRing(ring)
             }
             .create()
         dlg.setOnShowListener {

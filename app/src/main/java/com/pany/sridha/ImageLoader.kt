@@ -20,7 +20,9 @@ object ImageLoader {
         true
     }.getOrDefault(false)
 
-    fun decode(file: File): Bitmap? = runCatching {
+    fun decode(file: File): Bitmap? = runCatching { decodeOrThrow(file) }.getOrNull()
+
+    private fun decodeOrThrow(file: File): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, bounds)
         if (bounds.outWidth <= 0) return null
@@ -48,6 +50,6 @@ object ImageLoader {
             bmp = t
         }
         if (bmp.config != Bitmap.Config.ARGB_8888) bmp = bmp.copy(Bitmap.Config.ARGB_8888, false)
-        bmp
-    }.getOrNull()
+        return bmp
+    }
 }
