@@ -89,6 +89,43 @@
             android:textStyle="bold" />
 
         <LinearLayout
+            android:id="@+id/pendingBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/pendingInfo"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnPendingUndo"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/pending_undo" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnPendingClear"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/pending_clear" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnPendingDone"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="@string/pending_done" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/selectionBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

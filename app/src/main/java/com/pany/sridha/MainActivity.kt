@@ -46,6 +46,9 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
     private lateinit var empty: View
     private lateinit var progress: ProgressBar
     private lateinit var selectionBar: View
+    private lateinit var pendingBar: View
+    private lateinit var pendingInfo: TextView
+    private lateinit var pendingDone: View
 
     private val worker = Executors.newSingleThreadExecutor()
     private var cameraFile: File? = null
@@ -72,6 +75,12 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         empty = findViewById(R.id.empty)
         progress = findViewById(R.id.progress)
         selectionBar = findViewById(R.id.selectionBar)
+        pendingBar = findViewById(R.id.pendingBar)
+        pendingInfo = findViewById(R.id.pendingInfo)
+        pendingDone = findViewById(R.id.btnPendingDone)
+        pendingDone.setOnClickListener { finishPending() }
+        findViewById<View>(R.id.btnPendingUndo).setOnClickListener { plate.undoPending() }
+        findViewById<View>(R.id.btnPendingClear).setOnClickListener { plate.clearPending() }
         plate.listener = this
 
         findViewById<View>(R.id.btnCamera).setOnClickListener { openCamera() }
@@ -208,8 +217,11 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         showBusy(true)
         worker.execute {
             val channel = prefs.channel
-                ?: ArgbRaster.bestChannel(bmp.width, bmp.height, px, bmp.width / 2.0, bmp.height / 2.0, maxOf(bmp.width, bmp.height) / 2.0)
-            val found = PlateScanner().scan(ArgbRaster(bmp.width, bmp.height, px, channel), prefs.polarity.value)
+                ?: ArgbRaster.autoChannel(bmp.width, bmp.height, px, bmp.width / 2.0, bmp.height / 2.0, maxOf(bmp.width, bmp.height) / 2.0)
+            val found = PlateScanner().scan(
+                ArgbRaster(bmp.width, bmp.height, px, channel), prefs.polarity.value,
+                wellImage = ArgbRaster(bmp.width, bmp.height, px, Channel.LUMA),
+            )
             runOnUiThread {
                 showBusy(false)
                 if (found.isEmpty()) {
@@ -268,37 +280,71 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
     // ---- PlateView.Listener ----
 
     override fun onAutoTap(x: Double, y: Double, maxRadius: Double) {
-        val bmp = Session.bitmap ?: return
-        val px = Session.pixels ?: return
-        val prefs = Session.prefs
+        if (Session.bitmap == null) return
         showBusy(true)
         worker.execute {
-            val channel = prefs.channel ?: ArgbRaster.bestChannel(bmp.width, bmp.height, px, x, y, maxRadius)
-            val raster = ArgbRaster(bmp.width, bmp.height, px, channel)
-            val res = RingDetector().detect(raster, x, y, maxRadius, prefs.polarity.value)
-            val well = res?.let { PlateScanner().findWell(raster, it.circle) }
+            val found = detectAt(x, y, maxRadius)
             runOnUiThread {
                 showBusy(false)
-                if (res == null) {
+                if (found == null) {
                     Snackbar.make(plate, R.string.detect_failed, Snackbar.LENGTH_LONG).show()
                     return@runOnUiThread
                 }
-                val c = res.circle
-                addRing(c.cx, c.cy, c.r, well?.r)
+                val c = found.first.circle
+                val (group, role, dose) = Session.defaultsForNew()
+                addRing(RingMark(Session.newId(), c.cx, c.cy, c.r, group, role, dose, found.second?.r))
             }
         }
     }
 
-    override fun onManualTap(x: Double, y: Double, defaultRadius: Double) {
-        // Tapping inside an existing ring just selects it for adjustment.
-        val existing = Session.rings.filter { hypot(it.cx - x, it.cy - y) < it.r }.minByOrNull { it.r }
-        if (existing != null) { plate.selected = existing; return }
-        addRing(x, y, defaultRadius)
+    /**
+     * Zone around a point, outlined along the stained edge (not the punched hole), plus the well.
+     * Runs on the worker thread.
+     */
+    private fun detectAt(x: Double, y: Double, maxRadius: Double): Pair<RingDetector.Result, com.pany.sridha.core.Circle?>? {
+        val bmp = Session.bitmap ?: return null
+        val px = Session.pixels ?: return null
+        val prefs = Session.prefs
+        val channel = prefs.channel ?: ArgbRaster.autoChannel(bmp.width, bmp.height, px, x, y, maxRadius)
+        return PlateScanner().detectZone(
+            ArgbRaster(bmp.width, bmp.height, px, channel),
+            ArgbRaster(bmp.width, bmp.height, px, Channel.LUMA),
+            x, y, maxRadius, prefs.polarity.value,
+        )
     }
 
-    private fun addRing(cx: Double, cy: Double, r: Double, wellR: Double? = null) {
+    // ---- manual marking by edge points ----
+
+    override fun onPendingPointsChanged(count: Int) {
+        pendingBar.visibility = if (count > 0) View.VISIBLE else View.GONE
+        pendingInfo.text = getString(R.string.pending_info, count)
+        pendingDone.isEnabled = count >= 3
+    }
+
+    private fun finishPending() {
+        val pts = plate.pendingPoints.toList()
+        if (pts.size < 3) return
+        val c = com.pany.sridha.core.CircleFit.kasa(pts) ?: return
+        val bmp = Session.bitmap
+        val px = Session.pixels
+        val well = if (bmp != null && px != null)
+            PlateScanner().findWell(ArgbRaster(bmp.width, bmp.height, px, Channel.LUMA), c) else null
         val (group, role, dose) = Session.defaultsForNew()
-        val ring = RingMark(Session.newId(), cx, cy, r, group, role, dose, wellR)
+        plate.clearPending()
+        addRing(RingMark(Session.newId(), c.cx, c.cy, c.r, group, role, dose, well?.r, pts))
+    }
+
+    override fun onPointLongPress(ring: RingMark, index: Int) {
+        MaterialAlertDialogBuilder(this)
+            .setMessage(R.string.delete_point_confirm)
+            .setPositiveButton(R.string.delete) { _, _ ->
+                if (ring.removePoint(index)) changed() else toast(R.string.min_points)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun addRing(ring: RingMark) {
         Session.rings += ring
         changed()
         plate.selected = ring
@@ -345,22 +391,18 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
     // ---- ring actions ----
 
     private fun refine(ring: RingMark) {
-        val bmp = Session.bitmap ?: return
-        val px = Session.pixels ?: return
-        val prefs = Session.prefs
+        if (Session.bitmap == null) return
         showBusy(true)
         worker.execute {
-            val maxR = ring.r * 1.6 + 10
-            val channel = prefs.channel ?: ArgbRaster.bestChannel(bmp.width, bmp.height, px, ring.cx, ring.cy, maxR)
-            val raster = ArgbRaster(bmp.width, bmp.height, px, channel)
-            val res = RingDetector().detect(raster, ring.cx, ring.cy, maxR, prefs.polarity.value)
-            val well = res?.let { PlateScanner().findWell(raster, it.circle) }
+            val found = detectAt(ring.cx, ring.cy, ring.r * 1.6 + 10)
+            val res = found?.first
+            val well = found?.second
             runOnUiThread {
                 showBusy(false)
                 if (res == null) {
                     Snackbar.make(plate, R.string.detect_failed, Snackbar.LENGTH_LONG).show()
                 } else {
-                    ring.cx = res.circle.cx; ring.cy = res.circle.cy; ring.r = res.circle.r
+                    ring.setCircle(res.circle.cx, res.circle.cy, res.circle.r)
                     if (well != null) ring.wellR = well.r
                     changed()
                 }
@@ -387,7 +429,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         val group = v.findViewById<AutoCompleteTextView>(R.id.group)
         val dose = v.findViewById<TextInputEditText>(R.id.dose)
 
-        info.text = "D = ${Fmt.num(Session.diameterInUnits(ring), if (Session.mmPerPx != null) 2 else 1)} ${Session.unit}"
+        info.text = ringSummary(ring)
         roleGroup.check(if (ring.role == Role.STANDARD) R.id.roleStandard else R.id.roleSample)
         val suggestions = (listOf("Стандарт") + Session.groups()).distinct()
         group.setAdapter(ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, suggestions))
@@ -448,9 +490,9 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         wellD.setText(Fmt.num(p.wellDiameterMm, 2))
         subtract.isChecked = p.subtractWell
         scale.setText(Session.manualScale?.let { String.format(java.util.Locale.US, "%.6f", it) } ?: "0")
-        val channels = listOf<Channel?>(null, Channel.RED, Channel.GREEN, Channel.BLUE, Channel.LUMA)
+        val channels = listOf<Channel?>(null, Channel.STAIN, Channel.RED, Channel.GREEN, Channel.BLUE, Channel.LUMA)
         channel.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
-            listOf("Авто (макс. контраст)", "Красный (для синего красителя)", "Зелёный", "Синий", "Яркость"))
+            listOf("Авто", "Окраска: синий край зоны", "Красный", "Зелёный", "Синий", "Яркость"))
         channel.setSelection(channels.indexOf(p.channel))
         val polarities = Polarity.values().toList()
         polarity.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
@@ -547,8 +589,17 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         val std = Session.rings.count { it.role == Role.STANDARD }
         val smp = Session.rings.size - std
         var s = "Колец: ${Session.rings.size} (ст. $std, обр. $smp) · $scale"
-        plate.selected?.let { s += "\nВыбрано №${it.id}: D = ${Fmt.num(Session.diameterInUnits(it), if (Session.mmPerPx != null) 2 else 1)} ${Session.unit}" }
+        plate.selected?.let { s += "\nВыбрано №${it.id}: ${ringSummary(it)}" }
         status.text = s
+    }
+
+    /** Diameter, number of edge points and unevenness (min–max diameter through the points). */
+    private fun ringSummary(r: RingMark): String {
+        val k = Session.mmPerPx ?: 1.0
+        val digits = if (Session.mmPerPx != null) 2 else 1
+        val (lo, hi) = r.radiusRange()
+        return "D = ${Fmt.num(Session.diameterInUnits(r), digits)} ${Session.unit}; точек ${r.points.size}, " +
+            "по точкам ${Fmt.num(2 * lo * k, digits)}–${Fmt.num(2 * hi * k, digits)}"
     }
 
     private fun showBusy(b: Boolean) { progress.visibility = if (b) View.VISIBLE else View.GONE }

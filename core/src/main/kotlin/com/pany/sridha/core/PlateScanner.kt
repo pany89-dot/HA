@@ -15,7 +15,12 @@ import kotlin.math.sqrt
  *     transform: every zone becomes a peak whose height ≈ zone radius, even when zones touch.
  *  3. Each peak seeds [RingDetector] on the full-resolution image; results are validated,
  *     de-duplicated and filtered by size consistency.
- *  4. Inside every zone the punched well is located too (used for scale calibration).
+ *  4. Inside every zone the punched well is located too (used for scale calibration), on a
+ *     separate image where the hole is visible. A zone that collapsed onto the well edge is
+ *     searched again outside the well.
+ *
+ * For stained plates pass the [Channel.STAIN] raster as the image: the hole is invisible there,
+ * so zones are outlined along their outer blue edge.
  */
 class PlateScanner(
     private val detector: RingDetector = RingDetector(),
@@ -26,40 +31,63 @@ class PlateScanner(
 
     data class Found(val zone: Circle, val well: Circle?, val quality: Double)
 
-    /** @param polarity +1 dark rings, −1 light rings, 0 try both and keep the better result. */
-    fun scan(image: Raster, polarity: Int = 0): List<Found> {
-        if (polarity != 0) return scanWith(image, polarity)
-        val dark = scanWith(image, 1)
-        val light = scanWith(image, -1)
+    /**
+     * @param polarity +1 dark rings, −1 light rings, 0 try both and keep the better result.
+     * @param wellImage image in which the punched well is visible (e.g. luminance).
+     */
+    fun scan(image: Raster, polarity: Int = 0, wellImage: Raster = image): List<Found> {
+        if (polarity != 0) return scanWith(image, polarity, wellImage)
+        val dark = scanWith(image, 1, wellImage)
+        val light = scanWith(image, -1, wellImage)
         fun score(l: List<Found>) = l.sumOf { it.quality }
         return if (score(light) > score(dark)) light else dark
     }
 
-    fun scanWith(image: Raster, polarity: Int): List<Found> {
+    fun scanWith(image: Raster, polarity: Int, wellImage: Raster = image): List<Found> {
         val seeds = findSeeds(image, polarity)
         val zones = seeds.mapNotNull { s ->
-            val res = detector.detect(image, s.x, s.y, s.r * 1.8 + 6, polarity) ?: return@mapNotNull null
-            val r = res.circle.r
+            val res = detectZone(image, wellImage, s.x, s.y, s.r * 1.8 + 6, polarity) ?: return@mapNotNull null
+            val r = res.first.circle.r
             // The zone must contain the seed and be of similar size.
             if (r < 0.5 * s.r || r > 2.2 * s.r + 3) return@mapNotNull null
-            if (hypot(res.circle.cx - s.x, res.circle.cy - s.y) > 0.6 * r) return@mapNotNull null
+            if (hypot(res.first.circle.cx - s.x, res.first.circle.cy - s.y) > 0.6 * r) return@mapNotNull null
             res
         }
         // De-duplicate: best quality first.
-        val unique = ArrayList<RingDetector.Result>()
-        for (z in zones.sortedByDescending { it.quality }) {
-            val dup = unique.any {
-                hypot(it.circle.cx - z.circle.cx, it.circle.cy - z.circle.cy) < 0.5 * min(it.circle.r, z.circle.r)
-            }
+        val unique = ArrayList<Pair<RingDetector.Result, Circle?>>()
+        for (z in zones.sortedByDescending { it.first.quality }) {
+            val c = z.first.circle
+            val dup = unique.any { hypot(it.first.circle.cx - c.cx, it.first.circle.cy - c.cy) < 0.5 * min(it.first.circle.r, c.r) }
             if (!dup) unique += z
         }
         if (unique.isEmpty()) return emptyList()
-        val medR = Stats.median(unique.map { it.circle.r })
-        val consistent = unique.filter { it.circle.r in 0.4 * medR..2.5 * medR }
-        val found = consistent.map { z -> Found(z.circle, findWell(image, z.circle), z.quality) }
+        val medR = Stats.median(unique.map { it.first.circle.r })
+        val found = unique.filter { it.first.circle.r in 0.4 * medR..2.5 * medR }
+            .map { (z, well) -> Found(z.circle, well, z.quality) }
         // Real zones surround a punched well; when most do, drop the ones without (artefacts).
         val withWell = found.count { it.well != null }
         return if (withWell * 2 > found.size) found.filter { it.well != null } else found
+    }
+
+    /**
+     * Outer zone edge around a point plus the well inside it. If the edge found coincides with
+     * the well (hole edge instead of the stained edge), the search is repeated outside the well.
+     */
+    fun detectZone(image: Raster, wellImage: Raster, x: Double, y: Double, maxRadius: Double, polarity: Int): Pair<RingDetector.Result, Circle?>? {
+        var zone = detector.detect(image, x, y, maxRadius, polarity) ?: return null
+        var well = findWell(wellImage, zone.circle)
+        if (well == null) {
+            // The zone may itself be the hole: look for a well of about that size.
+            val hole = wellDetector.detect(wellImage, zone.circle.cx, zone.circle.cy, zone.circle.r * 1.3, 0)
+            if (hole != null && kotlin.math.abs(hole.circle.r - zone.circle.r) < 0.15 * zone.circle.r) well = hole.circle
+        }
+        if (well != null && zone.circle.r < 1.25 * well.r) {
+            val outer = detector.detect(image, well.cx, well.cy, max(maxRadius, well.r * 5), polarity, minRadius = well.r * 1.3)
+                ?: return null
+            zone = outer
+            well = findWell(wellImage, zone.circle) ?: well
+        }
+        return zone to well
     }
 
     /** Locates the punched well inside a zone; null if nothing plausible is found. */

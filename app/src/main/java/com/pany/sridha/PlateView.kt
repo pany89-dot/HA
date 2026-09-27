@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
+import android.graphics.Path
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PointF
@@ -14,8 +16,10 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 import androidx.core.content.ContextCompat
+import com.pany.sridha.core.CircleFit
 import com.pany.sridha.core.DoseParser
 import com.pany.sridha.core.Fmt
+import com.pany.sridha.core.Point
 import com.pany.sridha.core.Role
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -29,16 +33,34 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
 
     interface Listener {
         fun onAutoTap(x: Double, y: Double, maxRadius: Double)
-        fun onManualTap(x: Double, y: Double, defaultRadius: Double)
+        /** Points of a new ring being marked in [Mode.MANUAL] changed; [count] points so far. */
+        fun onPendingPointsChanged(count: Int)
         fun onCalibrationLine(ax: Double, ay: Double, bx: Double, by: Double)
         fun onSelectionChanged(ring: RingMark?)
         fun onRingEditRequested(ring: RingMark)
         fun onRingGeometryChanged(ring: RingMark)
+        /** Long press on edge point [index] of [ring] (offer to delete it). */
+        fun onPointLongPress(ring: RingMark, index: Int)
     }
 
     var listener: Listener? = null
     var mode = Mode.VIEW
-        set(v) { field = v; calibA = null; calibB = null; invalidate() }
+        set(v) {
+            field = v; calibA = null; calibB = null
+            if (pending.isNotEmpty()) { pending.clear(); listener?.onPendingPointsChanged(0) }
+            invalidate()
+        }
+
+    /** Edge points of a new ring being marked by hand (bitmap coordinates). */
+    private val pending = mutableListOf<Point>()
+    val pendingPoints: List<Point> get() = pending
+
+    fun clearPending() { pending.clear(); invalidate(); listener?.onPendingPointsChanged(0) }
+
+    fun undoPending() {
+        if (pending.isNotEmpty()) pending.removeAt(pending.size - 1)
+        invalidate(); listener?.onPendingPointsChanged(pending.size)
+    }
 
     private var bitmap: Bitmap? = null
     private var rings: List<RingMark> = emptyList()
@@ -56,6 +78,14 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val wellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.argb(200, 255, 255, 255) }
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val handleEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.BLACK }
+    private val pendingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.MAGENTA
+        pathEffect = DashPathEffect(floatArrayOf(10f, 6f), 0f)
+    }
+    private val loupeBorder = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.WHITE; strokeWidth = 2f }
+    private val loupeCross = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.RED; strokeWidth = 1.5f }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 13 * density
         color = Color.WHITE
@@ -147,7 +177,21 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
             canvas.drawLine(r.cx.toFloat(), r.cy.toFloat() - c, r.cx.toFloat(), r.cy.toFloat() + c, ringPaint)
             if (sel) {
                 handlePaint.color = colSel
-                canvas.drawCircle((r.cx + r.r).toFloat(), r.cy.toFloat(), 7 * density / s, handlePaint)
+                handleEdge.strokeWidth = 1f * density / s
+                r.points.forEachIndexed { i, p ->
+                    val rad = (if (i == dragPoint) 4f else 6f) * density / s
+                    canvas.drawCircle(p.x.toFloat(), p.y.toFloat(), rad, handlePaint)
+                    canvas.drawCircle(p.x.toFloat(), p.y.toFloat(), rad, handleEdge)
+                }
+            }
+        }
+        if (pending.isNotEmpty()) {
+            handlePaint.color = Color.MAGENTA
+            for (p in pending) canvas.drawCircle(p.x.toFloat(), p.y.toFloat(), 5 * density / s, handlePaint)
+            if (pending.size >= 3) CircleFit.kasa(pending)?.let {
+                pendingPaint.strokeWidth = 2f * density / s
+                pendingPaint.pathEffect = DashPathEffect(floatArrayOf(8 * density / s, 5 * density / s), 0f)
+                canvas.drawCircle(it.cx.toFloat(), it.cy.toFloat(), it.r.toFloat(), pendingPaint)
             }
         }
         calibA?.let { a ->
@@ -173,11 +217,51 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
             canvas.drawText(l1, pt[0] - w1 / 2, pt[1] - 20 * density, textPaint)
             canvas.drawText(l2, pt[0] - w2 / 2, pt[1] - 5 * density, textPaint)
         }
+        loupe?.let { drawLoupe(canvas, b, it) }
+    }
+
+    /** Magnified view of the area under the finger, shown in the corner away from it. */
+    private var loupe: Point? = null
+
+    private fun drawLoupe(canvas: Canvas, b: Bitmap, at: Point) {
+        val size = 130 * density
+        val margin = 10 * density
+        val screen = floatArrayOf(at.x.toFloat(), at.y.toFloat()).also { m.mapPoints(it) }
+        // Opposite corner from the finger.
+        val left = screen[0] > width / 2f
+        val cx = if (left) margin + size / 2 else width - margin - size / 2
+        val cy = margin + size / 2
+        val zoom = max(3f, 4f * scale()).coerceAtMost(60f)
+        val lm = Matrix().apply {
+            postTranslate(-at.x.toFloat(), -at.y.toFloat())
+            postScale(zoom, zoom)
+            postTranslate(cx, cy)
+        }
+        val clip = Path().apply { addCircle(cx, cy, size / 2, Path.Direction.CW) }
+        canvas.save()
+        canvas.clipPath(clip)
+        canvas.drawColor(Color.BLACK)
+        canvas.drawBitmap(b, lm, bmpPaint)
+        // Ring outlines inside the loupe too.
+        canvas.concat(lm)
+        for (r in rings) {
+            ringPaint.color = if (r === selected) colSel else if (r.role == Role.STANDARD) colStd else colSmp
+            ringPaint.strokeWidth = 1.5f / zoom
+            canvas.drawCircle(r.cx.toFloat(), r.cy.toFloat(), r.r.toFloat(), ringPaint)
+        }
+        canvas.restore()
+        val arm = 12 * density
+        canvas.drawLine(cx - arm, cy, cx - 3 * density, cy, loupeCross)
+        canvas.drawLine(cx + 3 * density, cy, cx + arm, cy, loupeCross)
+        canvas.drawLine(cx, cy - arm, cx, cy - 3 * density, loupeCross)
+        canvas.drawLine(cx, cy + 3 * density, cx, cy + arm, loupeCross)
+        canvas.drawCircle(cx, cy, size / 2, loupeBorder)
     }
 
     // ---- touch ----
 
-    private enum class Drag { NONE, PAN, MOVE_RING, RESIZE_RING }
+    private enum class Drag { NONE, PAN, MOVE_RING, RESIZE_RING, POINT }
+    private var dragPoint = -1
     private var drag = Drag.NONE
     private var lastX = 0f
     private var lastY = 0f
@@ -216,10 +300,7 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
                     val maxR = max(20.0, 0.5 * max(v.width(), v.height()).toDouble())
                     listener?.onAutoTap(p.x.toDouble(), p.y.toDouble(), maxR)
                 }
-                Mode.MANUAL -> {
-                    val v = visibleRect()
-                    listener?.onManualTap(p.x.toDouble(), p.y.toDouble(), 0.12 * min(v.width(), v.height()).toDouble())
-                }
+                Mode.MANUAL -> manualTap(p)
                 Mode.CALIBRATE -> {
                     if (calibA == null || calibB != null) { calibA = p; calibB = null }
                     else {
@@ -242,12 +323,59 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
         }
 
         override fun onLongPress(e: MotionEvent) {
+            if (dragChanged) return
+            // Long press on an edge point removes it (at least 3 must remain).
+            val sel = selected
+            val pi = if (sel != null) pointAt(sel, e.x, e.y) else -1
+            if (sel != null && pi >= 0) {
+                drag = Drag.NONE; loupe = null; invalidate()
+                listener?.onPointLongPress(sel, pi)
+                return
+            }
             if (drag == Drag.MOVE_RING || drag == Drag.RESIZE_RING) return
             val hit = ringAt(e.x, e.y) ?: return
             selected = hit
             listener?.onRingEditRequested(hit)
         }
     })
+
+    /**
+     * Manual marking: a tap near the edge of the selected ring adds an edge point to it;
+     * otherwise the tap adds a point of a new ring (finished from the activity).
+     */
+    private fun manualTap(p: PointF) {
+        val sel = selected
+        val tol = 16 * density / scale()
+        if (sel != null && pending.isEmpty()) {
+            val d = hypot(p.x - sel.cx, p.y - sel.cy)
+            if (abs(d - sel.r) <= max(0.35 * sel.r, tol.toDouble())) {
+                sel.addPoint(p.x.toDouble(), p.y.toDouble())
+                invalidate()
+                listener?.onRingGeometryChanged(sel)
+                return
+            }
+        }
+        if (pending.isEmpty()) {
+            val inside = rings.filter { hypot(p.x - it.cx, p.y - it.cy) < 0.6 * it.r }.minByOrNull { it.r }
+            if (inside != null) { selected = inside; return }
+        }
+        if (selected != null) selected = null
+        pending += Point(p.x.toDouble(), p.y.toDouble())
+        invalidate()
+        listener?.onPendingPointsChanged(pending.size)
+    }
+
+    private fun pointAt(ring: RingMark, x: Float, y: Float): Int {
+        val p = toImage(x, y)
+        val tol = 22 * density / scale()
+        var best = -1
+        var bestD = Double.MAX_VALUE
+        ring.points.forEachIndexed { i, q ->
+            val d = hypot(p.x - q.x, p.y - q.y)
+            if (d <= tol && d < bestD) { best = i; bestD = d }
+        }
+        return best
+    }
 
     /** Ring whose circumference or interior is under the finger; the smallest one wins. */
     private fun ringAt(x: Float, y: Float): RingMark? {
@@ -266,13 +394,18 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
                 downX = e.x; downY = e.y
                 dragChanged = false
                 drag = Drag.PAN
+                dragPoint = -1
                 val sel = selected
                 if (sel != null && mode != Mode.CALIBRATE) {
                     val p = toImage(e.x, e.y)
                     val dist = hypot(p.x - sel.cx, p.y - sel.cy)
                     val tol = 22 * density / scale()
-                    val handleDist = hypot(p.x - (sel.cx + sel.r), p.y - sel.cy)
-                    if (handleDist <= tol || abs(dist - sel.r) <= tol) {
+                    val pi = pointAt(sel, e.x, e.y)
+                    if (pi >= 0) {
+                        drag = Drag.POINT
+                        dragPoint = pi
+                        dragOffX = sel.points[pi].x - p.x; dragOffY = sel.points[pi].y - p.y
+                    } else if (abs(dist - sel.r) <= tol) {
                         drag = Drag.RESIZE_RING
                     } else if (dist < sel.r) {
                         drag = Drag.MOVE_RING
@@ -295,14 +428,23 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
                     Drag.PAN -> { m.postTranslate(dx, dy); invalidate() }
                     Drag.MOVE_RING -> if (sel != null) {
                         val p = toImage(e.x, e.y)
-                        sel.cx = p.x + dragOffX; sel.cy = p.y + dragOffY
+                        sel.translate(p.x + dragOffX - sel.cx, p.y + dragOffY - sel.cy)
                         dragChanged = true
                         invalidate()
                     }
                     Drag.RESIZE_RING -> if (sel != null) {
                         val p = toImage(e.x, e.y)
-                        sel.r = max(2.0, hypot(p.x - sel.cx, p.y - sel.cy))
+                        sel.resize(max(2.0, hypot(p.x - sel.cx, p.y - sel.cy)))
                         dragChanged = true
+                        loupe = Point(p.x.toDouble(), p.y.toDouble())
+                        invalidate()
+                    }
+                    Drag.POINT -> if (sel != null && dragPoint in sel.points.indices) {
+                        val p = toImage(e.x, e.y)
+                        val nx = p.x + dragOffX; val ny = p.y + dragOffY
+                        sel.movePoint(dragPoint, nx, ny)
+                        dragChanged = true
+                        loupe = Point(nx, ny)
                         invalidate()
                     }
                     Drag.NONE -> {}
@@ -314,6 +456,8 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
                 if (dragChanged && sel != null) listener?.onRingGeometryChanged(sel)
                 drag = Drag.NONE
                 dragChanged = false
+                dragPoint = -1
+                if (loupe != null) { loupe = null; invalidate() }
             }
         }
         return true

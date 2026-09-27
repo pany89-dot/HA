@@ -54,9 +54,17 @@ class RingDetector(private val params: Params = Params()) {
      * @param maxRadius largest ring radius to look for, in image pixels
      * @param expectedPolarity +1 dark ring, −1 light ring, 0 automatic
      */
-    fun detect(image: Raster, seedX: Double, seedY: Double, maxRadius: Double, expectedPolarity: Int = 0): Result? {
+    fun detect(
+        image: Raster,
+        seedX: Double,
+        seedY: Double,
+        maxRadius: Double,
+        expectedPolarity: Int = 0,
+        /** Edges closer to the centre are ignored (e.g. the punched well). */
+        minRadius: Double = params.minRadius,
+    ): Result? {
         val rMax = min(maxRadius, max(image.width, image.height).toDouble()).toInt()
-        if (rMax < params.minRadius + 6) return null
+        if (rMax < minRadius + 6) return null
         var cx = seedX
         var cy = seedY
         var radius = Double.NaN
@@ -65,10 +73,10 @@ class RingDetector(private val params: Params = Params()) {
 
         for (iter in 0 until params.iterations) {
             val rays = castRays(image, cx, cy, rMax)
-            if (rays.count { it.deriv.size > params.minRadius + 4 } < params.rays / 3) return last
+            if (rays.count { it.deriv.size > minRadius + 4 } < params.rays / 3) return last
 
             if (iter == 0) {
-                val (r0, pol) = pickEdge(rays, polarity) ?: return null
+                val (r0, pol) = pickEdge(rays, polarity, minRadius) ?: return null
                 radius = r0
                 polarity = pol
             }
@@ -85,7 +93,7 @@ class RingDetector(private val params: Params = Params()) {
             val medStrength = Stats.median(strengths)
             val strong = found.indices.filter { strengths[it] >= 0.3 * medStrength }.map { found[it] }
             val (circle, inliers) = CircleFit.robust(strong) ?: return last
-            if (circle.r < params.minRadius || circle.r > rMax * 1.2) return last
+            if (circle.r < minRadius || circle.r > rMax * 1.2) return last
 
             val quality = inliers.size.toDouble() / params.rays
             val result = Result(circle, inliers.map { strong[it] }, quality, polarity)
@@ -119,7 +127,7 @@ class RingDetector(private val params: Params = Params()) {
     }
 
     /** Chooses ring radius and polarity from the angle-averaged derivative profile. */
-    private fun pickEdge(rays: List<Ray>, fixedPolarity: Int): Pair<Double, Int>? {
+    private fun pickEdge(rays: List<Ray>, fixedPolarity: Int, minRadius: Double): Pair<Double, Int>? {
         val len = rays.maxOf { it.deriv.size }
         val avg = DoubleArray(len)
         val cnt = IntArray(len)
@@ -128,7 +136,7 @@ class RingDetector(private val params: Params = Params()) {
         val usable = (0 until len).lastOrNull { cnt[it] >= minCount } ?: return null
         for (i in 0..usable) avg[i] = avg[i] / cnt[i]
 
-        val lo = max(2, params.minRadius.roundToInt())
+        val lo = max(2, minRadius.roundToInt())
         val hi = usable - 2
         if (hi <= lo) return null
 

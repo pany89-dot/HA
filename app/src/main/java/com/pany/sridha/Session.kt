@@ -4,9 +4,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import com.pany.sridha.core.AssaySettings
 import com.pany.sridha.core.Channel
+import com.pany.sridha.core.CircleFit
 import com.pany.sridha.core.DoseParser
 import com.pany.sridha.core.Fmt
 import com.pany.sridha.core.PlateTemplate
+import com.pany.sridha.core.Point
 import com.pany.sridha.core.Role
 import com.pany.sridha.core.Stats
 import com.pany.sridha.core.TemplateCell
@@ -15,18 +17,78 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/** A ring marked on the plate photo. Coordinates are in bitmap pixels. */
+/**
+ * A ring marked on the plate photo. Coordinates are in bitmap pixels.
+ *
+ * The ring is defined by points on its edge (at least 3; by default 4 — left, top, right, bottom).
+ * Each point can be moved on its own, so an uneven ring is fitted by least squares through
+ * the edges marked on every side.
+ */
 class RingMark(
     val id: Int,
-    var cx: Double,
-    var cy: Double,
-    var r: Double,
+    cx: Double,
+    cy: Double,
+    r: Double,
     var group: String,
     var role: Role,
     var dose: Double,
     /** Radius of the punched well in pixels, if it was found (used for scale calibration). */
     var wellR: Double? = null,
-)
+    points: List<Point>? = null,
+) {
+    var cx = cx; private set
+    var cy = cy; private set
+    var r = r; private set
+    val points: MutableList<Point> = points?.toMutableList() ?: axisPoints(cx, cy, r)
+
+    init { if (points != null) refit() }
+
+    /** Replaces the ring by a circle with four edge points on the axes. */
+    fun setCircle(cx: Double, cy: Double, r: Double) {
+        this.cx = cx; this.cy = cy; this.r = r
+        points.clear(); points += axisPoints(cx, cy, r)
+    }
+
+    fun movePoint(i: Int, x: Double, y: Double) { points[i] = Point(x, y); refit() }
+
+    fun addPoint(x: Double, y: Double) { points += Point(x, y); refit() }
+
+    fun removePoint(i: Int): Boolean {
+        if (points.size <= 3) return false
+        points.removeAt(i); refit(); return true
+    }
+
+    fun translate(dx: Double, dy: Double) {
+        for (i in points.indices) points[i] = Point(points[i].x + dx, points[i].y + dy)
+        cx += dx; cy += dy
+    }
+
+    /** Uniformly scales the edge points about the centre so that the radius becomes [newR]. */
+    fun resize(newR: Double) {
+        if (r <= 0) return
+        val k = newR / r
+        for (i in points.indices) points[i] = Point(cx + (points[i].x - cx) * k, cy + (points[i].y - cy) * k)
+        r = newR
+    }
+
+    /** Smallest and largest distance of the edge points from the centre (unevenness). */
+    fun radiusRange(): Pair<Double, Double> {
+        val d = points.map { kotlin.math.hypot(it.x - cx, it.y - cy) }
+        return (d.minOrNull() ?: r) to (d.maxOrNull() ?: r)
+    }
+
+    fun copy(id: Int) = RingMark(id, cx, cy, r, group, role, dose, wellR, points)
+
+    private fun refit() {
+        CircleFit.kasa(points)?.let { cx = it.cx; cy = it.cy; r = it.r }
+    }
+
+    companion object {
+        fun axisPoints(cx: Double, cy: Double, r: Double) = mutableListOf(
+            Point(cx - r, cy), Point(cx, cy - r), Point(cx + r, cy), Point(cx, cy + r),
+        )
+    }
+}
 
 enum class Polarity(val value: Int) { AUTO(0), DARK(1), LIGHT(-1) }
 
@@ -112,7 +174,7 @@ object Session {
     fun newId() = nextId++
 
     fun renumber() {
-        rings.forEachIndexed { i, r -> rings[i] = RingMark(i + 1, r.cx, r.cy, r.r, r.group, r.role, r.dose, r.wellR) }
+        rings.forEachIndexed { i, r -> rings[i] = r.copy(i + 1) }
         nextId = rings.size + 1
     }
 
@@ -150,6 +212,7 @@ object Session {
             put("id", r.id); put("cx", r.cx); put("cy", r.cy); put("r", r.r)
             put("group", r.group); put("role", r.role.name); put("dose", r.dose)
             r.wellR?.let { put("wellR", it) }
+            put("pts", JSONArray().apply { for (p in r.points) { put(p.x); put(p.y) } })
         })
         val o = JSONObject().put("rings", arr).put("nextId", nextId)
         manualScale?.let { o.put("mmPerPx", it) }
@@ -209,6 +272,9 @@ object Session {
                         r.getInt("id"), r.getDouble("cx"), r.getDouble("cy"), r.getDouble("r"),
                         r.getString("group"), Role.valueOf(r.getString("role")), r.getDouble("dose"),
                         if (r.has("wellR")) r.getDouble("wellR") else null,
+                        r.optJSONArray("pts")?.let { a ->
+                            List(a.length() / 2) { k -> Point(a.getDouble(2 * k), a.getDouble(2 * k + 1)) }
+                        }?.takeIf { it.size >= 3 },
                     )
                 }
                 nextId = o.optInt("nextId", (rings.maxOfOrNull { it.id } ?: 0) + 1)
