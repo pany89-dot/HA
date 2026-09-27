@@ -50,7 +50,9 @@ APK собирается автоматически в GitHub Actions (вкла�
 
 - `core/` — чистый Kotlin без зависимостей от Android: поиск всех колец (`PlateScanner`),
   граница одного кольца (`RingDetector`), окружность (`CircleFit`), сетка и схема
-  (`GridAssign`, `PlateTemplate`), расчёт анализа (`AssayCalculator`), CSV. Покрыто тестами.
+  (`GridAssign`, `PlateTemplate`), расчёт анализа (`AssayCalculator`), CSV. Покрыто тестами,
+  в том числе на реальных фото пластинок (`core/src/test/resources/plates/`, `RealPlateTest`):
+  на каждой сборке проверяется, что на них находятся все 32 кольца с эталонными размерами.
 - `app/` — Android-интерфейс: `PlateView` (зум, разметка), `MainActivity`, `TemplateActivity`
   (схема пластинки), `ResultsActivity`, `PdfReport` (протокол).
 
