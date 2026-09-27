@@ -23,7 +23,7 @@ class BlueGelTest {
         (0 until 3).map { col -> Well(90.0 + col * 150, 90.0 + row * 150, holeR, holeR * (1.35 + 0.12 * ((row * 3 + col) % 5))) }
     }
 
-    private fun image(w: Int, h: Int, seed: Int = 5): IntArray {
+    private fun image(w: Int, h: Int, seed: Int = 5, darkPatch: Well? = null): IntArray {
         val rnd = Random(seed)
         val gel = doubleArrayOf(62.0, 105.0, 200.0)
         val ringIn = doubleArrayOf(45.0, 85.0, 180.0)
@@ -31,14 +31,20 @@ class BlueGelTest {
         val hole = doubleArrayOf(185.0, 197.0, 212.0)
         return IntArray(w * h) { i ->
             val x = i % w; val y = i / w
-            var c = gel
+            // Optional darker gel patch around one ring with its own soft edge ~25 px further out.
+            val localGel = if (darkPatch == null) gel else {
+                val r = hypot(x - darkPatch.cx, y - darkPatch.cy)
+                val k = 0.4 / (1 + exp((r - darkPatch.ringR - 25) / 4.0)) // soft edge of the patch
+                DoubleArray(3) { gel[it] * (1 - k) }
+            }
+            var c = localGel
             for (wl in wells) {
                 val r = hypot(x - wl.cx, y - wl.cy)
                 if (r < wl.ringR + 8) {
                     val t = ((r - wl.holeR) / (wl.ringR - wl.holeR)).coerceIn(0.0, 1.0)
                     val ring = DoubleArray(3) { ringIn[it] * (1 - t) + ringOut[it] * t }
                     val outer = 1 / (1 + exp((r - wl.ringR) / 1.5)) // soft outer edge
-                    c = DoubleArray(3) { gel[it] * (1 - outer) + ring[it] * outer }
+                    c = DoubleArray(3) { localGel[it] * (1 - outer) + ring[it] * outer }
                     if (r < wl.holeR) c = hole
                 }
             }
@@ -73,5 +79,13 @@ class BlueGelTest {
             val f = assertNotNull(PlateScanner().measureAt(red, luma, wl.cx + 6, wl.cy - 4, 200.0))
             assertTrue(abs(f.zone.r - wl.ringR) < 1.5, "ring ${f.zone.r} vs ${wl.ringR}")
         }
+    }
+
+    @Test
+    fun darkerGelAroundRingDoesNotWidenIt() {
+        val wl = wells[4]
+        val px = image(w, h, seed = 11, darkPatch = wl)
+        val f = assertNotNull(PlateScanner().measureAt(ArgbRaster(w, h, px, Channel.RED), ArgbRaster(w, h, px, Channel.LUMA), wl.cx, wl.cy, 200.0))
+        assertTrue(abs(f.zone.r - wl.ringR) < 1.5, "ring ${f.zone.r} vs ${wl.ringR}")
     }
 }

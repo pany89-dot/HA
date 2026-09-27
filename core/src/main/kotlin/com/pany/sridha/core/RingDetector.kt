@@ -43,6 +43,12 @@ class RingDetector(private val params: Params = Params()) {
          * (precipitin zones, so that the hole edge inside is skipped).
          */
         val strongest: Boolean = false,
+        /**
+         * With a fixed polarity: the boundary is the steepest rise from the darkest part of the
+         * ring back to the gel level (how the eye sees the edge). A darker gel patch around a ring
+         * or a gentle drift of the background then no longer pulls the boundary outwards.
+         */
+        val riseFromDarkest: Boolean = false,
     )
 
     data class Result(
@@ -166,6 +172,15 @@ class RingDetector(private val params: Params = Params()) {
         for (ray in rays) for (i in 2 until ray.deriv.size - 1 step 2) jitter += abs(ray.deriv[i] - ray.deriv[i - 1])
         val noise = 1.4826 * Stats.median(jitter) / sqrt(2.0)
 
+        if (params.riseFromDarkest && fixedPolarity != 0) {
+            riseEdge(avg, lo, hi, fixedPolarity)?.let { r ->
+                val strength = fixedPolarity * avg[r]
+                if (support(rays, r.toDouble(), fixedPolarity, max(0.4 * strength, 4 * noise)) >= 0.8 * params.minSupport) {
+                    return r.toDouble() to fixedPolarity
+                }
+            }
+        }
+
         // Outermost edge that most rays agree on.
         for (c in eligible.sortedByDescending { it.r }) {
             if (support(rays, c.r.toDouble(), c.pol, max(0.4 * c.strength, 4 * noise)) >= params.minSupport) {
@@ -174,6 +189,32 @@ class RingDetector(private val params: Params = Params()) {
         }
         val best = cands.maxBy { it.strength }
         return best.r.toDouble() to best.pol
+    }
+
+    /**
+     * Steepest rise (for [pol] = +1; fall for −1) between the darkest point of the averaged
+     * profile and the radius where the profile has recovered 90 % of the way to the gel level.
+     */
+    private fun riseEdge(avg: DoubleArray, lo: Int, hi: Int, pol: Int): Int? {
+        // Relative intensity (times polarity) by integrating the averaged derivative.
+        val j = DoubleArray(hi + 1)
+        for (i in lo + 1..hi) j[i] = j[i - 1] + pol * avg[i]
+        var iMin = lo
+        for (i in lo..hi) if (j[i] < j[iMin]) iMin = i
+        if (hi - iMin < 3) return null
+        val bg = Stats.median((iMin..hi).map { j[it] })
+        val depth = bg - j[iMin]
+        if (depth <= 0) return null
+        val target = j[iMin] + 0.9 * depth
+        var iBg = hi
+        for (i in iMin + 1..hi) if (j[i] >= target) { iBg = i; break }
+        var best = -1
+        var bestV = 0.0
+        for (i in iMin + 1..max(iMin + 2, iBg).coerceAtMost(hi)) {
+            val v = pol * avg[i]
+            if (v > bestV) { bestV = v; best = i }
+        }
+        return best.takeIf { it > 0 }
     }
 
     /** Fraction of rays reaching radius [r] that show an edge of polarity [pol] near it. */

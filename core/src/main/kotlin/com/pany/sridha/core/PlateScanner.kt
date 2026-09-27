@@ -73,7 +73,7 @@ class PlateScanner(
         val maxR = min(maxRadius, hole.r * 4.5)
         // Smoothing scaled to the hole: thin rings of small holes keep their edge position,
         // large rings are denoised more.
-        val sized = RingDetector(RingDetector.Params(smoothSigma = (0.07 * hole.r).coerceIn(0.7, 2.5)))
+        val sized = RingDetector(RingDetector.Params(smoothSigma = (0.07 * hole.r).coerceIn(0.7, 2.5), riseFromDarkest = true))
         val res = sized.detect(ringImage, hole.cx, hole.cy, maxR, if (ringPolarity == 0) 1 else ringPolarity, minRadius = hole.r * 1.1)
             ?: return null
         if (res.circle.r < hole.r * 1.08) return null
@@ -121,7 +121,7 @@ class PlateScanner(
      * outside it. Real holes score ≈ 1; a light patch bounded by a dark object on one side only
      * (plate edge, gap between rings) scores low.
      */
-    private fun surroundContrast(image: Raster, c: Circle, dirs: Int = 36): Double {
+    internal fun surroundContrast(image: Raster, c: Circle, dirs: Int = 36): Double {
         val diffs = DoubleArray(dirs) { k ->
             val a = 2 * Math.PI * k / dirs
             val ca = kotlin.math.cos(a); val sa = kotlin.math.sin(a)
@@ -190,11 +190,14 @@ class PlateScanner(
                 }
             }
         }
-        out.sortByDescending { it.second }
+        // Strongest per scale: many small specks must not crowd out the (fewer, low-contrast)
+        // holes. A candidate is dropped only as a duplicate of a stronger one at the same spot.
+        val perScale = out.groupBy { (it.first.r * 1000).roundToInt() }
+            .values.flatMap { layer -> layer.sortedByDescending { it.second }.take(120) }
+            .sortedByDescending { it.second }
         val kept = ArrayList<Pair<Circle, Double>>()
-        for (c in out) {
-            if (kept.none { hypot(it.first.cx - c.first.cx, it.first.cy - c.first.cy) < 0.8 * max(it.first.r, c.first.r) }) kept += c
-            if (kept.size >= 400) break
+        for (c in perScale) {
+            if (kept.none { hypot(it.first.cx - c.first.cx, it.first.cy - c.first.cy) < 0.6 * min(it.first.r, c.first.r) }) kept += c
         }
         return kept
     }
