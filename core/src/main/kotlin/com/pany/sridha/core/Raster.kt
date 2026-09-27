@@ -64,8 +64,9 @@ class ArgbRaster(
         }
 
         /**
-         * Automatic choice: the stain channel when the window contains distinctly blue pixels
-         * (stained zones), otherwise the channel with the largest spread.
+         * Automatic choice of the channel for ring boundaries: red when the window contains
+         * distinctly blue (Coomassie-stained) pixels — blue stain absorbs red most strongly —
+         * otherwise the channel with the largest spread.
          */
         fun autoChannel(width: Int, height: Int, pixels: IntArray, cx: Double, cy: Double, halfSize: Double): Channel {
             val x0 = (cx - halfSize).toInt().coerceIn(0, width - 1)
@@ -87,7 +88,7 @@ class ArgbRaster(
                 }
                 y += step
             }
-            return if (n > 0 && blue >= 0.02 * n) Channel.STAIN else bestChannel(width, height, pixels, cx, cy, halfSize)
+            return if (n > 0 && blue >= 0.02 * n) Channel.RED else bestChannel(width, height, pixels, cx, cy, halfSize)
         }
 
         /**

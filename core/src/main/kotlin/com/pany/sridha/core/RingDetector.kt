@@ -37,6 +37,11 @@ class RingDetector(private val params: Params = Params()) {
         val minSupport: Double = 0.55,
         /** Minimum fraction of rays that must survive robust fitting. */
         val minInliers: Double = 0.35,
+        /**
+         * true: take the strongest edge (punched holes); false: the outermost well-supported edge
+         * (precipitin zones, so that the hole edge inside is skipped).
+         */
+        val strongest: Boolean = false,
     )
 
     data class Result(
@@ -150,12 +155,18 @@ class RingDetector(private val params: Params = Params()) {
             }
         }
         if (cands.isEmpty()) return null
+        if (params.strongest) return cands.maxBy { it.strength }.let { it.r.toDouble() to it.pol }
         val strongest = cands.maxOf { it.strength }
         val eligible = cands.filter { it.strength >= params.relativeStrength * strongest }
 
+        // Noise level of the derivative (robust): a ray "shows" an edge only well above it.
+        val absD = ArrayList<Double>()
+        for (ray in rays) for (i in 1 until ray.deriv.size - 1 step 2) absD += abs(ray.deriv[i])
+        val noise = 1.4826 * Stats.median(absD)
+
         // Outermost edge that most rays agree on.
         for (c in eligible.sortedByDescending { it.r }) {
-            if (support(rays, c.r.toDouble(), c.pol, c.strength) >= params.minSupport) {
+            if (support(rays, c.r.toDouble(), c.pol, max(0.4 * c.strength, 4 * noise)) >= params.minSupport) {
                 return c.r.toDouble() to c.pol
             }
         }
@@ -163,17 +174,23 @@ class RingDetector(private val params: Params = Params()) {
         return best.r.toDouble() to best.pol
     }
 
-    private fun support(rays: List<Ray>, r: Double, pol: Int, avgStrength: Double): Double {
+    /** Fraction of rays reaching radius [r] that show an edge of polarity [pol] near it. */
+    private fun support(rays: List<Ray>, r: Double, pol: Int, threshold: Double): Double {
         val w = max(2.0, 0.2 * r)
         var ok = 0
+        var reach = 0
         for (ray in rays) {
+            if (ray.deriv.size < r + 2) continue // ray leaves the image before the edge
+            reach++
             val from = max(1, (r - w).toInt())
             val to = min(ray.deriv.size - 2, (r + w).toInt())
             var best = 0.0
             for (i in from..to) best = max(best, pol * ray.deriv[i])
-            if (best >= 0.4 * avgStrength) ok++
+            if (best >= threshold) ok++
         }
-        return ok.toDouble() / rays.size
+        // Rings cut by the image border are fine, but most of the circle must be visible.
+        if (reach < 0.5 * rays.size) return 0.0
+        return ok.toDouble() / reach
     }
 
     /** Returns (sub-pixel radius, strength) of the strongest edge with the given polarity. */

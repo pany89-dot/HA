@@ -9,33 +9,97 @@ import kotlin.math.sqrt
 /**
  * Finds all precipitin rings on a plate photo without user input.
  *
- *  1. Downsample, subtract the local background (large box blur) and threshold with Otsu.
- *  2. Clean the mask (opening), fill holes (the wells inside the zones), drop regions touching
- *     the image border (table, plate edges) and compute a distance
- *     transform: every zone becomes a peak whose height ≈ zone radius, even when zones touch.
- *  3. Each peak seeds [RingDetector] on the full-resolution image; results are validated,
- *     de-duplicated and filtered by size consistency.
- *  4. Inside every zone the punched well is located too (used for scale calibration), on a
- *     separate image where the hole is visible. A zone that collapsed onto the well edge is
- *     searched again outside the well.
+ * Main path (holes first) — works when the gel itself is stained blue as well as on clear gel:
+ *  1. Punched holes are the most reliable objects: light, uniform discs of one size. They are
+ *     found on the luminance image (background subtraction, Otsu, distance-transform seeds,
+ *     strongest edge per seed) and filtered by equal size.
+ *  2. From every hole outwards, the ring boundary is the outermost well-supported transition
+ *     from the darker precipitin ring to the lighter gel ("dark → light" going outwards). The hole
+ *     edge itself goes "light → dark" and lies inside the search start, so it is never taken.
  *
- * For stained plates pass the [Channel.STAIN] raster as the image: the hole is invisible there,
- * so zones are outlined along their outer blue edge.
+ * Fallback (zones first) — when no light holes are visible: zones are segmented directly and
+ * the well is searched inside each zone.
  */
 class PlateScanner(
     private val detector: RingDetector = RingDetector(),
     private val wellDetector: RingDetector = RingDetector(RingDetector.Params(minRadius = 2.0, minSupport = 0.5)),
+    private val holeDetector: RingDetector = RingDetector(RingDetector.Params(minRadius = 2.0, strongest = true)),
 ) {
 
     data class Seed(val x: Double, val y: Double, val r: Double)
 
+    /** [zone] — outer ring boundary; [well] — punched hole; [quality] — fraction of rays that fit. */
     data class Found(val zone: Circle, val well: Circle?, val quality: Double)
 
     /**
+     * @param ringImage channel where the ring is darker than the gel (red or luminance)
+     * @param holeImage luminance, where the punched holes are light
+     * @param ringPolarity +1 ring darker than the gel around it, −1 lighter
+     */
+    fun scan(ringImage: Raster, holeImage: Raster, ringPolarity: Int = 1): List<Found> {
+        val holes = findHoles(holeImage)
+        if (holes.size < 2) return scanZones(ringImage, if (ringPolarity == 0) 0 else ringPolarity, holeImage)
+        return holes.map { h ->
+            val nn = holes.filter { it !== h }.minOfOrNull { hypot(it.cx - h.cx, it.cy - h.cy) } ?: (8 * h.r)
+            val ring = ringAround(ringImage, h, 0.55 * nn, ringPolarity)
+            if (ring != null) Found(ring.circle, h, ring.quality) else Found(h, h, 0.0)
+        }
+    }
+
+    /** Ring around a tapped point: hole first, then its outer boundary; falls back to zone-first. */
+    fun measureAt(ringImage: Raster, holeImage: Raster, x: Double, y: Double, maxRadius: Double, ringPolarity: Int = 1): Found? {
+        val hole = holeDetector.detect(holeImage, x, y, maxRadius * 0.6, -1)
+            ?.circle?.takeIf { hypot(it.cx - x, it.cy - y) < it.r }
+        if (hole != null) {
+            val ring = ringAround(ringImage, hole, maxRadius, ringPolarity)
+            return if (ring != null) Found(ring.circle, hole, ring.quality) else Found(hole, hole, 0.0)
+        }
+        val z = detectZone(ringImage, holeImage, x, y, maxRadius, ringPolarity) ?: return null
+        return Found(z.first.circle, z.second, z.first.quality)
+    }
+
+    /** Light punched hole inside a ring marked by hand; null if none is visible. */
+    fun holeInside(holeImage: Raster, zone: Circle): Circle? {
+        val h = holeDetector.detect(holeImage, zone.cx, zone.cy, zone.r * 0.8, -1)?.circle ?: return null
+        if (h.r > 0.9 * zone.r || hypot(h.cx - zone.cx, h.cy - zone.cy) > 0.35 * zone.r) return null
+        return h
+    }
+
+    /** Outer boundary of the precipitin ring around a punched hole, or null if there is no ring. */
+    fun ringAround(ringImage: Raster, hole: Circle, maxRadius: Double, ringPolarity: Int = 1): RingDetector.Result? {
+        // Precipitin rings in SRID are at most a few hole diameters wide.
+        val maxR = min(maxRadius, hole.r * 4.5)
+        val res = detector.detect(ringImage, hole.cx, hole.cy, maxR, if (ringPolarity == 0) 1 else ringPolarity, minRadius = hole.r * 1.1)
+            ?: return null
+        if (res.circle.r < hole.r * 1.08) return null
+        if (hypot(res.circle.cx - hole.cx, res.circle.cy - hole.cy) > 0.35 * hole.r) return null
+        return res
+    }
+
+    /** Light punched holes of one size (the same cutter). */
+    fun findHoles(holeImage: Raster): List<Circle> {
+        val seeds = findSeeds(holeImage, -1)
+        val holes = seeds.mapNotNull { s ->
+            val res = holeDetector.detect(holeImage, s.x, s.y, s.r * 1.3 + 4, -1) ?: return@mapNotNull null
+            val c = res.circle
+            if (c.r < 0.6 * s.r || c.r > 1.6 * s.r + 3) return@mapNotNull null
+            if (hypot(c.cx - s.x, c.cy - s.y) > 0.5 * c.r) return@mapNotNull null
+            if (res.quality < 0.5) return@mapNotNull null
+            c
+        }
+        val unique = ArrayList<Circle>()
+        for (c in holes) if (unique.none { hypot(it.cx - c.cx, it.cy - c.cy) < max(it.r, c.r) }) unique += c
+        if (unique.size < 2) return unique
+        val med = Stats.median(unique.map { it.r })
+        return unique.filter { it.r in 0.8 * med..1.25 * med }
+    }
+
+    /**
+     * Zones-first fallback.
      * @param polarity +1 dark rings, −1 light rings, 0 try both and keep the better result.
      * @param wellImage image in which the punched well is visible (e.g. luminance).
      */
-    fun scan(image: Raster, polarity: Int = 0, wellImage: Raster = image): List<Found> {
+    fun scanZones(image: Raster, polarity: Int = 0, wellImage: Raster = image): List<Found> {
         if (polarity != 0) return scanWith(image, polarity, wellImage)
         val dark = scanWith(image, 1, wellImage)
         val light = scanWith(image, -1, wellImage)

@@ -45,7 +45,7 @@ class PlateScannerTest {
     @Test
     fun findsAllRingsAndWells() {
         val img = plate(discs, 520, 480)
-        val found = PlateScanner().scan(img, 0)
+        val found = PlateScanner().scan(img, img)
         assertEquals(16, found.size, "found ${found.map { it.zone }}")
         for (d in discs) {
             val f = assertNotNull(found.firstOrNull { hypot(it.zone.cx - d.cx, it.zone.cy - d.cy) < 3 }, "missing $d")
@@ -66,14 +66,14 @@ class PlateScannerTest {
     fun lightRingsAutoPolarity() {
         // Unstained plate photographed close-up: gel fills the frame.
         val img = plate(discs.take(8), 520, 300, dark = false, seed = 9, margin = 0)
-        val found = PlateScanner().scan(img, 0)
+        val found = PlateScanner().scanZones(img, 0)
         assertEquals(8, found.size)
     }
 
     @Test
     fun endToEndHaFromTemplate() {
         val img = plate(discs, 520, 480, seed = 4)
-        val found = PlateScanner().scan(img, 1)
+        val found = PlateScanner().scan(img, img)
         val grid = GridAssign.assign(found.map { it.zone })
         val t = PlateTemplate.fill(4, 4, listOf("Стандарт", "Образец 1"), doses, 2, byRows = true, adjacentReplicates = false)
         val mmPerPx = 3.0 / (2 * Stats.median(found.mapNotNull { it.well?.r }))

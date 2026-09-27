@@ -32,7 +32,6 @@ import com.pany.sridha.core.DoseParser
 import com.pany.sridha.core.Fmt
 import com.pany.sridha.core.GridAssign
 import com.pany.sridha.core.PlateScanner
-import com.pany.sridha.core.RingDetector
 import com.pany.sridha.core.Role
 import java.io.File
 import java.util.concurrent.Executors
@@ -219,8 +218,9 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
             val channel = prefs.channel
                 ?: ArgbRaster.autoChannel(bmp.width, bmp.height, px, bmp.width / 2.0, bmp.height / 2.0, maxOf(bmp.width, bmp.height) / 2.0)
             val found = PlateScanner().scan(
-                ArgbRaster(bmp.width, bmp.height, px, channel), prefs.polarity.value,
-                wellImage = ArgbRaster(bmp.width, bmp.height, px, Channel.LUMA),
+                ringImage = ArgbRaster(bmp.width, bmp.height, px, channel),
+                holeImage = ArgbRaster(bmp.width, bmp.height, px, Channel.LUMA),
+                ringPolarity = ringPolarity(),
             )
             runOnUiThread {
                 showBusy(false)
@@ -290,9 +290,9 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
                     Snackbar.make(plate, R.string.detect_failed, Snackbar.LENGTH_LONG).show()
                     return@runOnUiThread
                 }
-                val c = found.first.circle
+                val c = found.zone
                 val (group, role, dose) = Session.defaultsForNew()
-                addRing(RingMark(Session.newId(), c.cx, c.cy, c.r, group, role, dose, found.second?.r))
+                addRing(RingMark(Session.newId(), c.cx, c.cy, c.r, group, role, dose, found.well?.r))
             }
         }
     }
@@ -301,17 +301,19 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
      * Zone around a point, outlined along the stained edge (not the punched hole), plus the well.
      * Runs on the worker thread.
      */
-    private fun detectAt(x: Double, y: Double, maxRadius: Double): Pair<RingDetector.Result, com.pany.sridha.core.Circle?>? {
+    private fun detectAt(x: Double, y: Double, maxRadius: Double): PlateScanner.Found? {
         val bmp = Session.bitmap ?: return null
         val px = Session.pixels ?: return null
-        val prefs = Session.prefs
-        val channel = prefs.channel ?: ArgbRaster.autoChannel(bmp.width, bmp.height, px, x, y, maxRadius)
-        return PlateScanner().detectZone(
+        val channel = Session.prefs.channel ?: ArgbRaster.autoChannel(bmp.width, bmp.height, px, x, y, maxRadius)
+        return PlateScanner().measureAt(
             ArgbRaster(bmp.width, bmp.height, px, channel),
             ArgbRaster(bmp.width, bmp.height, px, Channel.LUMA),
-            x, y, maxRadius, prefs.polarity.value,
+            x, y, maxRadius, ringPolarity(),
         )
     }
+
+    /** Rings are darker than the gel around them unless the user chose light rings. */
+    private fun ringPolarity() = if (Session.prefs.polarity == Polarity.LIGHT) -1 else 1
 
     // ---- manual marking by edge points ----
 
@@ -328,7 +330,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         val bmp = Session.bitmap
         val px = Session.pixels
         val well = if (bmp != null && px != null)
-            PlateScanner().findWell(ArgbRaster(bmp.width, bmp.height, px, Channel.LUMA), c) else null
+            PlateScanner().holeInside(ArgbRaster(bmp.width, bmp.height, px, Channel.LUMA), c) else null
         val (group, role, dose) = Session.defaultsForNew()
         plate.clearPending()
         addRing(RingMark(Session.newId(), c.cx, c.cy, c.r, group, role, dose, well?.r, pts))
@@ -395,14 +397,14 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         showBusy(true)
         worker.execute {
             val found = detectAt(ring.cx, ring.cy, ring.r * 1.6 + 10)
-            val res = found?.first
-            val well = found?.second
+            val res = found?.zone
+            val well = found?.well
             runOnUiThread {
                 showBusy(false)
                 if (res == null) {
                     Snackbar.make(plate, R.string.detect_failed, Snackbar.LENGTH_LONG).show()
                 } else {
-                    ring.setCircle(res.circle.cx, res.circle.cy, res.circle.r)
+                    ring.setCircle(res.cx, res.cy, res.r)
                     if (well != null) ring.wellR = well.r
                     changed()
                 }
@@ -496,7 +498,7 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         channel.setSelection(channels.indexOf(p.channel))
         val polarities = Polarity.values().toList()
         polarity.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
-            listOf("Авто", "Тёмные кольца на светлом фоне (окрашенные)", "Светлые кольца на тёмном фоне"))
+            listOf("Авто (кольцо темнее геля)", "Кольцо темнее геля вокруг", "Кольцо светлее геля вокруг"))
         polarity.setSelection(polarities.indexOf(p.polarity))
         ask.isChecked = p.askOnAdd
 

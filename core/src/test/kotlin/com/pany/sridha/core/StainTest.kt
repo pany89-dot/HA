@@ -56,22 +56,22 @@ class StainTest {
     private val h = 480
 
     @Test
-    fun autoChannelPicksStain() {
+    fun autoChannelPicksRedForBlueStain() {
         val px = plate(intArrayOf(245, 245, 245))
-        assertEquals(Channel.STAIN, ArgbRaster.autoChannel(w, h, px, w / 2.0, h / 2.0, w / 2.0))
+        assertEquals(Channel.RED, ArgbRaster.autoChannel(w, h, px, w / 2.0, h / 2.0, w / 2.0))
     }
 
     @Test
     fun outlinesBlueEdgeWithWhiteHole() {
         val px = plate(intArrayOf(248, 248, 248))
-        check(PlateScanner().scan(ArgbRaster(w, h, px, Channel.STAIN), 0, ArgbRaster(w, h, px, Channel.LUMA)))
+        check(PlateScanner().scan(ArgbRaster(w, h, px, Channel.RED), ArgbRaster(w, h, px, Channel.LUMA)))
     }
 
     @Test
     fun outlinesBlueEdgeWithDarkHole() {
         // Plate photographed on a dark surface: the hole looks almost black.
         val px = plate(intArrayOf(30, 30, 35))
-        check(PlateScanner().scan(ArgbRaster(w, h, px, Channel.STAIN), 0, ArgbRaster(w, h, px, Channel.LUMA)))
+        check(PlateScanner().scanZones(ArgbRaster(w, h, px, Channel.STAIN), 0, ArgbRaster(w, h, px, Channel.LUMA)))
     }
 
     @Test
