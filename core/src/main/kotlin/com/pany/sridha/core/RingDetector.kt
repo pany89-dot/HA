@@ -9,6 +9,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Finds the outer boundary of a precipitin ring around a point tapped by the user.
@@ -159,10 +160,11 @@ class RingDetector(private val params: Params = Params()) {
         val strongest = cands.maxOf { it.strength }
         val eligible = cands.filter { it.strength >= params.relativeStrength * strongest }
 
-        // Noise level of the derivative (robust): a ray "shows" an edge only well above it.
-        val absD = ArrayList<Double>()
-        for (ray in rays) for (i in 1 until ray.deriv.size - 1 step 2) absD += abs(ray.deriv[i])
-        val noise = 1.4826 * Stats.median(absD)
+        // Noise level of the derivative, from its sample-to-sample jitter (robust): smooth slopes of
+        // wide, diffuse rings do not count as noise. A ray "shows" an edge only well above it.
+        val jitter = ArrayList<Double>()
+        for (ray in rays) for (i in 2 until ray.deriv.size - 1 step 2) jitter += abs(ray.deriv[i] - ray.deriv[i - 1])
+        val noise = 1.4826 * Stats.median(jitter) / sqrt(2.0)
 
         // Outermost edge that most rays agree on.
         for (c in eligible.sortedByDescending { it.r }) {

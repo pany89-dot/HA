@@ -1,9 +1,11 @@
 package com.pany.sridha.core
 
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
@@ -69,29 +71,140 @@ class PlateScanner(
     fun ringAround(ringImage: Raster, hole: Circle, maxRadius: Double, ringPolarity: Int = 1): RingDetector.Result? {
         // Precipitin rings in SRID are at most a few hole diameters wide.
         val maxR = min(maxRadius, hole.r * 4.5)
-        val res = detector.detect(ringImage, hole.cx, hole.cy, maxR, if (ringPolarity == 0) 1 else ringPolarity, minRadius = hole.r * 1.1)
+        // Smoothing scaled to the hole: thin rings of small holes keep their edge position,
+        // large rings are denoised more.
+        val sized = RingDetector(RingDetector.Params(smoothSigma = (0.07 * hole.r).coerceIn(0.7, 2.5)))
+        val res = sized.detect(ringImage, hole.cx, hole.cy, maxR, if (ringPolarity == 0) 1 else ringPolarity, minRadius = hole.r * 1.1)
             ?: return null
         if (res.circle.r < hole.r * 1.08) return null
         if (hypot(res.circle.cx - hole.cx, res.circle.cy - hole.cy) > 0.35 * hole.r) return null
         return res
     }
 
-    /** Light punched holes of one size (the same cutter). */
-    fun findHoles(holeImage: Raster): List<Circle> {
-        val seeds = findSeeds(holeImage, -1)
-        val holes = seeds.mapNotNull { s ->
-            val res = holeDetector.detect(holeImage, s.x, s.y, s.r * 1.3 + 4, -1) ?: return@mapNotNull null
-            val c = res.circle
-            if (c.r < 0.6 * s.r || c.r > 1.6 * s.r + 3) return@mapNotNull null
-            if (hypot(c.cx - s.x, c.cy - s.y) > 0.5 * c.r) return@mapNotNull null
-            if (res.quality < 0.5) return@mapNotNull null
-            c
+    /**
+     * Light punched holes of one size (the same cutter).
+     *
+     * Bright round blobs are found by a scale-normalised Laplacian-of-Gaussian search (no global
+     * threshold, so white paper around the plate or uneven light do not matter). Each candidate is
+     * confirmed by its edge, and only the most frequent size is kept: the punched holes are the
+     * most numerous objects of equal size on the photo.
+     */
+    fun findHoles(holeImage: Raster, workSize: Int = 640): List<Circle> {
+        // Specks smaller than this are dust or JPEG noise, never a punched hole.
+        val minR = max(4.0, min(holeImage.width, holeImage.height) / 150.0)
+        val cands = blobCandidates(holeImage, workSize, minR)
+        val holes = ArrayList<Pair<Circle, Double>>()
+        for ((c, score) in cands) {
+            val res = holeDetector.detect(holeImage, c.cx, c.cy, c.r * 1.5 + 4, -1) ?: continue
+            val h = res.circle
+            if (h.r < 0.6 * c.r || h.r > 1.7 * c.r + 2) continue
+            if (hypot(h.cx - c.cx, h.cy - c.cy) > 0.6 * h.r) continue
+            // A punched hole is round (its edge fits on nearly every ray) and lies wholly in the frame.
+            if (res.quality < 0.7) continue
+            if (h.cx - h.r < 1 || h.cy - h.r < 1 || h.cx + h.r > holeImage.width - 2 || h.cy + h.r > holeImage.height - 2) continue
+            // ...and it is lighter than its surroundings in (almost) every direction.
+            if (surroundContrast(holeImage, h) < 0.8) continue
+            if (holes.any { hypot(it.first.cx - h.cx, it.first.cy - h.cy) < max(it.first.r, h.r) }) continue
+            holes += h to score
         }
-        val unique = ArrayList<Circle>()
-        for (c in holes) if (unique.none { hypot(it.cx - c.cx, it.cy - c.cy) < max(it.r, c.r) }) unique += c
-        if (unique.size < 2) return unique
-        val med = Stats.median(unique.map { it.r })
-        return unique.filter { it.r in 0.8 * med..1.25 * med }
+        if (holes.size < 3) return holes.map { it.first }
+        // Dominant size: for every hole sum the blob responses of the holes within ±15 % of its
+        // radius — the many equal punched holes outweigh scattered look-alikes.
+        val best = holes.maxBy { (h, _) -> holes.filter { abs(it.first.r / h.r - 1) <= 0.15 }.sumOf { it.second } }.first
+        val cluster = holes.map { it.first }.filter { abs(it.r / best.r - 1) <= 0.15 }
+        val med = Stats.median(cluster.map { it.r })
+        return holes.map { it.first }.filter { it.r in 0.8 * med..1.25 * med }
+    }
+
+    /**
+     * Fraction of directions in which the disc interior is clearly lighter than a band just
+     * outside it. Real holes score ≈ 1; a light patch bounded by a dark object on one side only
+     * (plate edge, gap between rings) scores low.
+     */
+    private fun surroundContrast(image: Raster, c: Circle, dirs: Int = 36): Double {
+        val diffs = DoubleArray(dirs) { k ->
+            val a = 2 * Math.PI * k / dirs
+            val ca = kotlin.math.cos(a); val sa = kotlin.math.sin(a)
+            fun mean(from: Double, to: Double): Double {
+                var s = 0.0; var n = 0
+                var t = from
+                while (t <= to) {
+                    val v = image.sample(c.cx + t * c.r * ca, c.cy + t * c.r * sa)
+                    if (!v.isNaN()) { s += v; n++ }
+                    t += 0.1
+                }
+                return if (n > 0) s / n else Double.NaN
+            }
+            mean(0.2, 0.75) - mean(1.25, 1.7)
+        }
+        val valid = diffs.filter { !it.isNaN() }
+        if (valid.size < dirs / 2) return 0.0
+        val med = Stats.median(valid)
+        if (med <= 0) return 0.0
+        return valid.count { it > max(8.0, 0.35 * med) }.toDouble() / valid.size
+    }
+
+    /** Bright blob candidates (centre, radius in image pixels) with their LoG response, strongest first. */
+    internal fun blobCandidates(image: Raster, workSize: Int, minRadius: Double = 0.0): List<Pair<Circle, Double>> {
+        val scale = max(1.0, max(image.width, image.height).toDouble() / workSize)
+        val w = max(1, ceil(image.width / scale).toInt())
+        val h = max(1, ceil(image.height / scale).toInt())
+        val g = downsample(image, w, h, scale)
+        val sigmas = ArrayList<Double>()
+        // Scales below the smallest plausible hole are skipped (one extra layer kept for the 3-D maximum).
+        var sg = max(1.2, minRadius / scale / sqrt(2.0) / 1.25)
+        while (sg < min(w, h) / 12.0) { sigmas += sg; sg *= 1.25 }
+        if (sigmas.size < 3) return emptyList()
+        // Scale-normalised response of a bright blob: −σ²·∇²(G_σ * I).
+        val resp = sigmas.map { s ->
+            val b = gaussBlur(g, w, h, s)
+            val out = FloatArray(w * h)
+            for (y in 1 until h - 1) for (x in 1 until w - 1) {
+                val i = y * w + x
+                val lap = b[i - 1] + b[i + 1] + b[i - w] + b[i + w] - 4 * b[i]
+                out[i] = (-lap * s * s).toFloat()
+            }
+            out
+        }
+        var maxResp = 0f
+        for (r in resp) for (v in r) if (v > maxResp) maxResp = v
+        if (maxResp <= 0f) return emptyList()
+        val thr = 0.05f * maxResp
+        val out = ArrayList<Pair<Circle, Double>>()
+        for (k in 1 until sigmas.size - 1) {
+            val cur = resp[k]
+            for (y in 2 until h - 2) for (x in 2 until w - 2) {
+                val v = cur[y * w + x]
+                if (v < thr) continue
+                var isMax = true
+                loop@ for (dk in -1..1) {
+                    val layer = resp[k + dk]
+                    for (dy in -1..1) for (dx in -1..1) {
+                        if (dk == 0 && dx == 0 && dy == 0) continue
+                        if (layer[(y + dy) * w + x + dx] > v) { isMax = false; break@loop }
+                    }
+                }
+                if (isMax) {
+                    val r = sigmas[k] * sqrt(2.0) * scale
+                    out += Circle((x + 0.5) * scale, (y + 0.5) * scale, r) to v.toDouble()
+                }
+            }
+        }
+        out.sortByDescending { it.second }
+        val kept = ArrayList<Pair<Circle, Double>>()
+        for (c in out) {
+            if (kept.none { hypot(it.first.cx - c.first.cx, it.first.cy - c.first.cy) < 0.8 * max(it.first.r, c.first.r) }) kept += c
+            if (kept.size >= 400) break
+        }
+        return kept
+    }
+
+    /** Gaussian blur approximated by three box blurs (linear time for any σ). */
+    private fun gaussBlur(src: FloatArray, w: Int, h: Int, sigma: Double): FloatArray {
+        val r = max(1, ((sqrt(4 * sigma * sigma + 1) - 1) / 2).roundToInt())
+        var a = src
+        repeat(3) { a = boxBlur(a, w, h, r) }
+        return a
     }
 
     /**
@@ -143,7 +256,7 @@ class PlateScanner(
         if (well == null) {
             // The zone may itself be the hole: look for a well of about that size.
             val hole = wellDetector.detect(wellImage, zone.circle.cx, zone.circle.cy, zone.circle.r * 1.3, 0)
-            if (hole != null && kotlin.math.abs(hole.circle.r - zone.circle.r) < 0.15 * zone.circle.r) well = hole.circle
+            if (hole != null && abs(hole.circle.r - zone.circle.r) < 0.15 * zone.circle.r) well = hole.circle
         }
         if (well != null && zone.circle.r < 1.25 * well.r) {
             val outer = detector.detect(image, well.cx, well.cy, max(maxRadius, well.r * 5), polarity, minRadius = well.r * 1.3)
