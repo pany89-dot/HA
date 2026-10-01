@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import com.pany.sridha.core.CircleFit
 import com.pany.sridha.core.DoseParser
 import com.pany.sridha.core.Fmt
+import com.pany.sridha.core.Oval
 import com.pany.sridha.core.Point
 import com.pany.sridha.core.Role
 import kotlin.math.abs
@@ -188,10 +189,14 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
         if (pending.isNotEmpty()) {
             handlePaint.color = Color.MAGENTA
             for (p in pending) canvas.drawCircle(p.x.toFloat(), p.y.toFloat(), 5 * density / s, handlePaint)
-            if (pending.size >= 3) CircleFit.kasa(pending)?.let {
+            if (pending.size >= 3) CircleFit.kasa(pending)?.let { c ->
+                val o = Oval.fit(pending, c.cx, c.cy) ?: return@let
                 pendingPaint.strokeWidth = 2f * density / s
                 pendingPaint.pathEffect = DashPathEffect(floatArrayOf(8 * density / s, 5 * density / s), 0f)
-                canvas.drawCircle(it.cx.toFloat(), it.cy.toFloat(), it.r.toFloat(), pendingPaint)
+                val path = Path()
+                o.points(90).forEachIndexed { i, p -> if (i == 0) path.moveTo(p.x.toFloat(), p.y.toFloat()) else path.lineTo(p.x.toFloat(), p.y.toFloat()) }
+                path.close()
+                canvas.drawPath(path, pendingPaint)
             }
         }
         calibA?.let { a ->

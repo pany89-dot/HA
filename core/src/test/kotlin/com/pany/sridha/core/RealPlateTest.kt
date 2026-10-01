@@ -12,11 +12,12 @@ import kotlin.test.assertTrue
  *  - light_blue_gel.jpg — light-blue gel on white paper, whole plate, finger in the corner,
  *    diffuse halos in the top rows;
  *  - dark_blue_gel.jpg — dark-blue gel, sharp rings, a darker gel patch around some rings;
- *  - plate_D_contrast.jpg, plate_A_contrast.jpg — contrast-enhanced photos: slightly oval holes,
- *    marker letters touching holes, a crack across a ring, uneven rings, a light gel patch.
+ *  - plate_*_contrast.jpg — contrast-enhanced photos: slightly oval holes, marker letters touching
+ *    holes, cracks and a line across rings, uneven and off-centre diffuse rings, light and dark
+ *    gel patches, holes with hardly any ring.
  *
- * Expected values are area-equivalent ring radii (px, reading order), checked visually against
- * the outer edge of the dark ring.
+ * Expected values are area-equivalent radii (px, reading order) of the round-oval outline,
+ * checked visually against the outer edge of the stained ring.
  */
 class RealPlateTest {
 
@@ -61,8 +62,8 @@ class RealPlateTest {
     fun lightBlueGelOnWhitePaper() = check(
         "light_blue_gel.jpg",
         doubleArrayOf(
-            67.1, 61.3, 54.3, 50.5, 66.1, 60.1, 54.0, 46.4, 60.0, 55.3, 50.6, 44.1, 56.5, 52.1, 48.9, 45.0,
-            59.5, 54.8, 49.7, 45.8, 59.0, 53.3, 48.5, 45.2, 53.1, 48.3, 46.2, 42.7, 50.1, 47.4, 45.2, 40.2,
+            66.9, 61.4, 54.6, 50.5, 65.7, 60.2, 53.7, 46.4, 60.3, 55.4, 50.4, 44.3, 56.9, 51.9, 48.5, 44.9,
+            59.6, 55.1, 49.3, 45.5, 58.7, 53.1, 48.2, 44.1, 53.4, 48.6, 45.1, 42.6, 50.4, 47.8, 44.9, 39.9,
         ),
     )
 
@@ -70,8 +71,8 @@ class RealPlateTest {
     fun darkBlueGel() = check(
         "dark_blue_gel.jpg",
         doubleArrayOf(
-            96.1, 85.3, 76.4, 66.3, 79.1, 72.5, 65.5, 58.3, 83.7, 76.2, 67.0, 58.6, 76.8, 69.8, 63.1, 56.0,
-            86.5, 80.0, 70.3, 62.0, 72.9, 67.3, 61.3, 55.1, 76.7, 69.6, 62.4, 55.2, 69.5, 64.0, 58.9, 52.7,
+            92.7, 85.6, 76.7, 66.4, 79.5, 72.4, 65.4, 57.8, 84.6, 76.6, 67.3, 58.2, 77.1, 70.0, 63.1, 55.6,
+            86.9, 80.6, 70.6, 61.9, 73.3, 67.3, 61.1, 55.1, 76.6, 69.6, 62.7, 54.9, 70.1, 64.6, 58.8, 52.2,
         ),
     )
 
@@ -79,8 +80,8 @@ class RealPlateTest {
     fun contrastPlateD() = check(
         "plate_D_contrast.jpg",
         doubleArrayOf(
-            89.3, 84.8, 79.3, 67.7, 84.8, 79.0, 72.7, 64.9, 85.5, 81.3, 75.3, 67.9, 84.7, 79.6, 73.9, 67.1,
-            89.5, 80.3, 74.2, 69.2, 83.0, 76.8, 73.2, 67.4, 88.2, 79.3, 74.4, 69.7, 87.2, 79.2, 72.8, 67.3,
+            90.0, 84.8, 79.6, 68.2, 84.5, 78.7, 72.4, 64.6, 86.1, 81.7, 75.6, 68.6, 85.0, 80.2, 74.5, 67.6,
+            89.8, 81.3, 75.8, 69.7, 83.0, 76.5, 72.9, 67.0, 88.2, 79.5, 74.8, 70.4, 87.0, 79.6, 73.8, 67.8,
         ),
     )
 
@@ -88,8 +89,44 @@ class RealPlateTest {
     fun contrastPlateA() = check(
         "plate_A_contrast.jpg",
         doubleArrayOf(
-            91.3, 84.1, 76.3, 68.6, 90.4, 82.4, 74.7, 67.0, 91.0, 83.2, 75.1, 66.6, 89.2, 81.9, 74.7, 67.1,
-            92.0, 85.0, 76.6, 69.2, 89.9, 82.9, 76.0, 69.1, 88.3, 82.5, 75.5, 68.3, 87.3, 82.4, 75.3, 67.5,
+            91.7, 84.2, 76.4, 68.1, 90.5, 82.4, 74.6, 67.2, 90.6, 83.4, 75.2, 66.3, 88.9, 81.9, 74.7, 66.8,
+            91.3, 85.1, 76.3, 68.8, 90.1, 83.0, 75.9, 68.5, 89.0, 82.5, 75.5, 67.9, 87.3, 82.0, 74.9, 68.1,
+        ),
+    )
+
+    @Test
+    fun contrastPlate1() = check(
+        "plate_1_contrast.jpg",
+        doubleArrayOf(
+            83.1, 77.9, 70.8, 64.7, 82.4, 76.3, 68.9, 63.1, 87.2, 80.9, 72.9, 66.5, 87.1, 78.3, 74.4, 63.0,
+            83.0, 77.9, 70.3, 63.8, 81.8, 76.7, 71.4, 64.9, 89.8, 81.3, 76.6, 69.3, 78.1, 76.1, 70.3, 63.1,
+        ),
+    )
+
+    @Test
+    fun contrastPlate13() = check(
+        "plate_1-3_contrast.jpg",
+        doubleArrayOf(
+            89.2, 82.8, 75.3, 66.9, 84.0, 77.9, 70.8, 64.0, 93.6, 85.4, 78.2, 69.8, 87.0, 80.6, 73.3, 66.8,
+            89.5, 83.7, 76.2, 68.6, 82.3, 76.7, 71.5, 65.6, 92.3, 86.0, 77.1, 69.6, 90.4, 83.3, 74.2, 68.3,
+        ),
+    )
+
+    @Test
+    fun contrastPlateWithLine() = check(
+        "plate_1-line_contrast.jpg",
+        doubleArrayOf(
+            89.8, 82.9, 75.5, 66.7, 83.9, 77.4, 70.5, 63.3, 89.9, 84.6, 76.1, 69.2, 86.2, 79.7, 73.5, 66.6,
+            86.9, 82.9, 75.3, 68.9, 81.1, 77.2, 71.4, 65.3, 90.8, 84.2, 78.4, 68.2, 87.3, 81.1, 71.8, 66.9,
+        ),
+    )
+
+    @Test
+    fun contrastPlate17() = check(
+        "plate_17_contrast.jpg",
+        doubleArrayOf(
+            82.3, 74.2, 68.7, 61.4, 78.1, 72.7, 65.6, 61.1, 79.9, 74.2, 68.1, 62.5, 79.8, 73.7, 67.9, 62.9,
+            80.7, 74.9, 69.0, 64.1, 76.7, 72.1, 67.5, 64.8, 79.7, 74.7, 68.3, 63.9, 78.9, 73.3, 68.3, 63.7,
         ),
     )
 }

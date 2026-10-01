@@ -8,7 +8,7 @@ import com.pany.sridha.core.CircleFit
 import com.pany.sridha.core.DoseParser
 import com.pany.sridha.core.Fmt
 import com.pany.sridha.core.PlateTemplate
-import com.pany.sridha.core.PolarContour
+import com.pany.sridha.core.Oval
 import com.pany.sridha.core.Point
 import com.pany.sridha.core.Role
 import com.pany.sridha.core.Stats
@@ -21,9 +21,9 @@ import java.io.File
 /**
  * A ring marked on the plate photo. Coordinates are in bitmap pixels.
  *
- * The ring is defined by points on its edge (at least 3; 12 for automatically found rings).
- * Each point can be moved on its own. Between the points the outline follows the angle, so an
- * uneven ring keeps its real shape; [r] is the radius of the circle with the same area.
+ * The ring is defined by points on its edge (at least 3; 8 for automatically found rings).
+ * Each point can be moved on its own; the outline is the round oval fitted through all points
+ * (a circle for fewer than 5 points), and [r] is the radius of the circle with the same area.
  */
 class RingMark(
     val id: Int,
@@ -42,12 +42,16 @@ class RingMark(
     var r = r; private set
     val points: MutableList<Point> = points?.toMutableList() ?: axisPoints(cx, cy, r)
 
-    init { if (points != null) refit() }
+    /** Fitted round-oval outline. */
+    var oval: Oval = Oval(cx, cy, r); private set
+
+    init { refit() }
 
     /** Replaces the ring by a circle with four edge points on the axes. */
     fun setCircle(cx: Double, cy: Double, r: Double) {
         this.cx = cx; this.cy = cy; this.r = r
         points.clear(); points += axisPoints(cx, cy, r)
+        oval = Oval(cx, cy, r)
     }
 
     /** Replaces the edge points (e.g. by a freshly detected outline). */
@@ -57,7 +61,7 @@ class RingMark(
     }
 
     /** Outline for drawing. */
-    fun outline(n: Int = 90): List<Point> = PolarContour.outline(cx, cy, points, n)
+    fun outline(n: Int = 90): List<Point> = oval.points(n)
 
     fun movePoint(i: Int, x: Double, y: Double) { points[i] = Point(x, y); refit() }
 
@@ -71,6 +75,7 @@ class RingMark(
     fun translate(dx: Double, dy: Double) {
         for (i in points.indices) points[i] = Point(points[i].x + dx, points[i].y + dy)
         cx += dx; cy += dy
+        oval = oval.copy(cx = oval.cx + dx, cy = oval.cy + dy)
     }
 
     /** Uniformly scales the edge points about the centre so that the radius becomes [newR]. */
@@ -78,21 +83,19 @@ class RingMark(
         if (r <= 0) return
         val k = newR / r
         for (i in points.indices) points[i] = Point(cx + (points[i].x - cx) * k, cy + (points[i].y - cy) * k)
-        r = newR
+        refit()
     }
 
-    /** Smallest and largest distance of the edge points from the centre (unevenness). */
-    fun radiusRange(): Pair<Double, Double> {
-        val d = points.map { kotlin.math.hypot(it.x - cx, it.y - cy) }
-        return (d.minOrNull() ?: r) to (d.maxOrNull() ?: r)
-    }
+    /** Half of the short and long diameter of the oval. */
+    fun radiusRange(): Pair<Double, Double> = oval.minRadius to oval.maxRadius
 
     fun copy(id: Int) = RingMark(id, cx, cy, r, group, role, dose, wellR, points)
 
     private fun refit() {
         val c = CircleFit.kasa(points) ?: return
-        cx = c.cx; cy = c.cy
-        r = PolarContour.equivalentRadius(cx, cy, points)
+        val o = Oval.fit(points, c.cx, c.cy) ?: Oval(c.cx, c.cy, c.r)
+        oval = o
+        cx = o.cx; cy = o.cy; r = o.equivalentRadius
     }
 
     companion object {

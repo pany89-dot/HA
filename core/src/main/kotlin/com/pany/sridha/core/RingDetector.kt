@@ -44,11 +44,12 @@ class RingDetector(private val params: Params = Params()) {
          */
         val strongest: Boolean = false,
         /**
-         * With a fixed polarity: the boundary is the steepest rise from the darkest part of the
-         * ring back to the gel level (how the eye sees the edge). A darker gel patch around a ring
-         * or a gentle drift of the background then no longer pulls the boundary outwards.
+         * With a fixed polarity: going outwards from the darkest part of the ring, the boundary is
+         * where the intensity has come half way back to the gel level. This follows how the eye
+         * sees the edge — for sharp rings, for wide diffuse halos with a thin dark rim at the hole,
+         * and next to darker gel patches around a ring.
          */
-        val riseFromDarkest: Boolean = false,
+        val halfDepthEdge: Boolean = false,
     )
 
     data class Result(
@@ -59,29 +60,15 @@ class RingDetector(private val params: Params = Params()) {
         val quality: Double,
         /** +1 if the ring is darker than the surrounding gel, −1 if lighter. */
         val polarity: Int,
-        /**
-         * The real (possibly uneven) outline: edge radius on every ray from the circle centre,
-         * spikes from scratches replaced by the local median. Index k is angle 2πk/rays.
-         */
-        val radii: DoubleArray = DoubleArray(0),
+        /** Round-oval outline fitted robustly to the edge on every ray (null if not computed). */
+        val oval: Oval? = null,
     ) {
-        /** [n] outline points at equal angles (interpolated from [radii]). */
-        fun contour(n: Int = 12): List<Point> {
-            if (radii.isEmpty()) return List(n) { k ->
-                val a = 2 * PI * k / n; Point(circle.cx + circle.r * cos(a), circle.cy + circle.r * sin(a))
-            }
-            return List(n) { k ->
-                val pos = k.toDouble() * radii.size / n
-                val i0 = pos.toInt() % radii.size; val i1 = (i0 + 1) % radii.size
-                val r = radii[i0] + (radii[i1] - radii[i0]) * (pos - pos.toInt())
-                val a = 2 * PI * k / n
-                Point(circle.cx + r * cos(a), circle.cy + r * sin(a))
-            }
-        }
+        /** [n] outline points at equal angles. */
+        fun contour(n: Int = 8): List<Point> =
+            (oval ?: Oval(circle.cx, circle.cy, circle.r)).points(n)
 
-        /** Radius of the circle with the same area as the real outline. */
-        val equivalentRadius: Double
-            get() = if (radii.isEmpty()) circle.r else sqrt(radii.sumOf { it * it } / radii.size)
+        /** Radius of the circle with the same area as the outline. */
+        val equivalentRadius: Double get() = oval?.equivalentRadius ?: circle.r
     }
 
     /**
@@ -105,22 +92,30 @@ class RingDetector(private val params: Params = Params()) {
         var radius = Double.NaN
         var polarity = expectedPolarity
         var last: Result? = null
+        var levels: Levels? = null
 
         for (iter in 0 until params.iterations) {
             val rays = castRays(image, cx, cy, rMax)
             if (rays.count { it.deriv.size > minRadius + 4 } < params.rays / 3) return last
 
+            // Depth rule (fixed polarity): boundary levels for this centre.
+            val lv = if (params.halfDepthEdge && polarity != 0) depthLevels(rays, minRadius, polarity) else null
             if (iter == 0) {
-                val (r0, pol) = pickEdge(rays, polarity, minRadius) ?: return null
-                radius = r0
-                polarity = pol
+                if (lv != null) radius = lv.radius
+                else {
+                    val (r0, pol) = pickEdge(rays, polarity, minRadius) ?: return null
+                    radius = r0
+                    polarity = pol
+                }
             }
+            levels = lv
             val window = if (iter == 0) max(3.0, 0.25 * radius) else max(2.0, 0.12 * radius)
 
             val found = ArrayList<Point>(rays.size)
             val strengths = ArrayList<Double>(rays.size)
             for (ray in rays) {
-                val hit = locateOnRay(ray, radius - window, radius + window, polarity) ?: continue
+                val t = lv?.let { rayThreshold(ray, it, polarity, radius) }
+                val hit = locate(ray, radius - window, radius + window, polarity, t, radius) ?: continue
                 found += Point(cx + hit.first * ray.cos, cy + hit.first * ray.sin)
                 strengths += hit.second
             }
@@ -141,24 +136,87 @@ class RingDetector(private val params: Params = Params()) {
             if (iter > 0 && shift < 0.2 && dr < 0.2) break
         }
         val res = last?.takeIf { it.quality >= params.minInliers } ?: return null
-        return res.copy(radii = outlineRadii(image, res.circle, rMax, res.polarity))
+        return res.copy(oval = fitOval(image, res.circle, rMax, res.polarity, levels))
     }
 
-    /** Edge radius on every ray around the fitted circle; outliers replaced by the local median. */
-    private fun outlineRadii(image: Raster, c: Circle, rMax: Int, pol: Int): DoubleArray {
-        val rays = castRays(image, c.cx, c.cy, min(rMax, (c.r * 1.3 + 4).toInt()))
-        val w = max(2.0, 0.15 * c.r)
-        val raw = DoubleArray(rays.size) { i -> locateOnRay(rays[i], c.r - w, c.r + w, pol)?.first ?: Double.NaN }
-        val n = raw.size
-        return DoubleArray(n) { i ->
-            val neigh = (-3..3).map { raw[(i + it + n) % n] }.filter { !it.isNaN() }
-            val med = if (neigh.isEmpty()) c.r else Stats.median(neigh)
-            val v = raw[i]
-            if (v.isNaN() || abs(v - med) > max(1.0, 0.06 * c.r)) med else v
+    /** Edge on every ray around the fitted circle, then a robust round-oval fit. */
+    private fun fitOval(image: Raster, c: Circle, rMax: Int, pol: Int, levels: Levels?): Oval? {
+        val rays = castRays(image, c.cx, c.cy, rMax)
+        val lv = levels?.let { depthLevels(rays, it.lo.toDouble(), pol) }
+        val w = max(2.0, 0.18 * c.r)
+        val pts = rays.mapNotNull { ray ->
+            val t = lv?.let { rayThreshold(ray, it, pol, c.r) }
+            locate(ray, c.r - w, c.r + w, pol, t, c.r)?.let { Point(c.cx + it.first * ray.cos, c.cy + it.first * ray.sin) }
         }
+        if (pts.size < rays.size / 3) return null
+        return Oval.fit(pts, c.cx, c.cy, robust = true)
     }
 
-    private class Ray(val cos: Double, val sin: Double, val deriv: DoubleArray)
+    /** Edge on one ray: the half-depth crossing when [threshold] is known, else the steepest edge. */
+    private fun locate(ray: Ray, from: Double, to: Double, pol: Int, threshold: Double?, near: Double): Pair<Double, Double>? {
+        if (threshold == null) return locateOnRay(ray, from, to, pol)
+        val v = ray.level
+        val a = max(1, from.toInt())
+        val b = min(v.size - 1, to.toInt() + 1)
+        var best: Pair<Double, Double>? = null
+        for (i in a..b) {
+            val p = pol * (v[i - 1] - threshold); val q = pol * (v[i] - threshold)
+            if (p < 0 && q >= 0) {
+                val r = i - 1 + p / (p - q)
+                val strength = abs(ray.deriv.getOrElse(i) { 0.0 }) + 1e-6
+                if (best == null || abs(r - near) < abs(best.first - near)) best = r to strength
+            }
+        }
+        return best
+    }
+
+    /** Levels of the boundary rule for one centre: gel band, ring search range and start radius. */
+    private class Levels(val lo: Int, val hi: Int, val bandFrom: Int, val iMin: Int, val minLevel: Double, val gel: Double, val radius: Double)
+
+    /**
+     * Boundary by the depth rule on the median (over rays) profile: darkest point of the ring
+     * outside [minRadius], gel level in the outer band, and the first radius outwards from the
+     * darkest point where the intensity has come [DEPTH_FRACTION] of the way back to the gel.
+     */
+    private fun depthLevels(rays: List<Ray>, minRadius: Double, pol: Int): Levels? {
+        val len = rays.maxOf { it.level.size }
+        val usable = (0 until len).lastOrNull { i -> rays.count { it.level.size > i } >= rays.size / 2 } ?: return null
+        val prof = DoubleArray(usable + 1) { i -> Stats.median(rays.filter { it.level.size > i }.map { it.level[i] }) }
+        val lo = max(2, minRadius.roundToInt())
+        val hi = usable
+        if (hi - lo < 8) return null
+        var iMin = lo
+        for (i in lo..hi) if (pol * prof[i] < pol * prof[iMin]) iMin = i
+        val bandFrom = hi - max(3, ((hi - lo) * 0.15).toInt())
+        val gel = (bandFrom..hi).map { prof[it] }.average()
+        val depth = pol * (gel - prof[iMin])
+        if (depth < 8) return null // no ring to speak of
+        val t = prof[iMin] + DEPTH_FRACTION * (gel - prof[iMin])
+        for (i in iMin + 1..hi) {
+            val p = pol * (prof[i - 1] - t); val q = pol * (prof[i] - t)
+            if (p < 0 && q >= 0) return Levels(lo, hi, bandFrom, iMin, prof[iMin], gel, i - 1 + p / (p - q))
+        }
+        return null
+    }
+
+    /**
+     * Boundary level for one ray from its own ring and gel levels (uneven lighting, a ring
+     * spreading to one side); falls back to the common levels where the ray is short.
+     */
+    private fun rayThreshold(ray: Ray, lv: Levels, pol: Int, radius: Double): Double {
+        val v = ray.level
+        val top = min(v.size - 1, (radius * 1.25).toInt())
+        var ringLevel = lv.minLevel
+        if (top > lv.lo) {
+            ringLevel = v[lv.lo]
+            for (i in lv.lo..top) if (pol * v[i] < pol * ringLevel) ringLevel = v[i]
+        }
+        val gel = if (v.size > lv.hi) Stats.median((lv.bandFrom..lv.hi).map { v[it] }) else lv.gel
+        if (pol * (gel - ringLevel) < 4) return lv.minLevel + DEPTH_FRACTION * (lv.gel - lv.minLevel)
+        return ringLevel + DEPTH_FRACTION * (gel - ringLevel)
+    }
+
+    private class Ray(val cos: Double, val sin: Double, val deriv: DoubleArray, val level: DoubleArray)
 
     private fun castRays(image: Raster, cx: Double, cy: Double, rMax: Int): List<Ray> {
         val kernel = gaussianKernel(params.smoothSigma)
@@ -174,7 +232,7 @@ class RingDetector(private val params: Params = Params()) {
             val smooth = convolve(raw.toDoubleArray(), kernel)
             val d = DoubleArray(smooth.size)
             for (i in 1 until smooth.size - 1) d[i] = (smooth[i + 1] - smooth[i - 1]) / 2
-            Ray(c, s, d)
+            Ray(c, s, d, smooth)
         }
     }
 
@@ -212,15 +270,6 @@ class RingDetector(private val params: Params = Params()) {
         for (ray in rays) for (i in 2 until ray.deriv.size - 1 step 2) jitter += abs(ray.deriv[i] - ray.deriv[i - 1])
         val noise = 1.4826 * Stats.median(jitter) / sqrt(2.0)
 
-        if (params.riseFromDarkest && fixedPolarity != 0) {
-            riseEdge(avg, lo, hi, fixedPolarity)?.let { r ->
-                val strength = fixedPolarity * avg[r]
-                if (support(rays, r.toDouble(), fixedPolarity, max(0.4 * strength, 4 * noise)) >= 0.8 * params.minSupport) {
-                    return r.toDouble() to fixedPolarity
-                }
-            }
-        }
-
         // Outermost edge that most rays agree on.
         for (c in eligible.sortedByDescending { it.r }) {
             if (support(rays, c.r.toDouble(), c.pol, max(0.4 * c.strength, 4 * noise)) >= params.minSupport) {
@@ -229,32 +278,6 @@ class RingDetector(private val params: Params = Params()) {
         }
         val best = cands.maxBy { it.strength }
         return best.r.toDouble() to best.pol
-    }
-
-    /**
-     * Steepest rise (for [pol] = +1; fall for −1) between the darkest point of the averaged
-     * profile and the radius where the profile has recovered 90 % of the way to the gel level.
-     */
-    private fun riseEdge(avg: DoubleArray, lo: Int, hi: Int, pol: Int): Int? {
-        // Relative intensity (times polarity) by integrating the averaged derivative.
-        val j = DoubleArray(hi + 1)
-        for (i in lo + 1..hi) j[i] = j[i - 1] + pol * avg[i]
-        var iMin = lo
-        for (i in lo..hi) if (j[i] < j[iMin]) iMin = i
-        if (hi - iMin < 3) return null
-        val bg = Stats.median((iMin..hi).map { j[it] })
-        val depth = bg - j[iMin]
-        if (depth <= 0) return null
-        val target = j[iMin] + 0.9 * depth
-        var iBg = hi
-        for (i in iMin + 1..hi) if (j[i] >= target) { iBg = i; break }
-        var best = -1
-        var bestV = 0.0
-        for (i in iMin + 1..max(iMin + 2, iBg).coerceAtMost(hi)) {
-            val v = pol * avg[i]
-            if (v > bestV) { bestV = v; best = i }
-        }
-        return best.takeIf { it > 0 }
     }
 
     /** Fraction of rays reaching radius [r] that show an edge of polarity [pol] near it. */
@@ -316,5 +339,13 @@ class RingDetector(private val params: Params = Params()) {
             out[i] = acc
         }
         return out
+    }
+
+    companion object {
+        /**
+         * Where the boundary lies between the ring level (0) and the gel level (1). Slightly below
+         * one half, so that a darker gel patch around a ring is not taken as part of the ring.
+         */
+        const val DEPTH_FRACTION = 0.4
     }
 }

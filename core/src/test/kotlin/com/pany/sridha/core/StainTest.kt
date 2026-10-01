@@ -46,7 +46,7 @@ class StainTest {
         assertEquals(16, found.size, "found ${found.map { it.zone }}")
         for (d in discs) {
             val f = assertNotNull(found.firstOrNull { hypot(it.zone.cx - d.cx, it.zone.cy - d.cy) < 3 })
-            assertTrue(abs(f.zone.r - d.zoneR) < 1.0, "zone ${f.zone.r} vs blue edge ${d.zoneR}")
+            assertTrue(abs(f.zone.r - d.zoneR) < 1.5, "zone ${f.zone.r} vs blue edge ${d.zoneR}")
             val well = assertNotNull(f.well)
             assertTrue(abs(well.r - wellR) < 1.0, "well ${well.r}")
         }

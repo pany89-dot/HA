@@ -598,13 +598,13 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
         status.text = s
     }
 
-    /** Diameter, number of edge points and unevenness (min–max diameter through the points). */
+    /** Area-equivalent diameter, short × long diameter of the oval and number of edge points. */
     private fun ringSummary(r: RingMark): String {
         val k = Session.mmPerPx ?: 1.0
         val digits = if (Session.mmPerPx != null) 2 else 1
         val (lo, hi) = r.radiusRange()
-        return "D = ${Fmt.num(Session.diameterInUnits(r), digits)} ${Session.unit}; точек ${r.points.size}, " +
-            "по точкам ${Fmt.num(2 * lo * k, digits)}–${Fmt.num(2 * hi * k, digits)}"
+        return "D = ${Fmt.num(Session.diameterInUnits(r), digits)} ${Session.unit} (по площади); " +
+            "овал ${Fmt.num(2 * lo * k, digits)}×${Fmt.num(2 * hi * k, digits)}; точек ${r.points.size}"
     }
 
     private fun showBusy(b: Boolean) { progress.visibility = if (b) View.VISIBLE else View.GONE }
