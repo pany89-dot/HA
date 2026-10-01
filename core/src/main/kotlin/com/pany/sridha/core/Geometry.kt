@@ -134,3 +134,58 @@ object Stats {
         return sqrt(values.sumOf { (it - m) * (it - m) } / (values.size - 1))
     }
 }
+
+/**
+ * Closed star-shaped contour around a centre, given by edge points in any order. Between the
+ * points the radius is interpolated linearly in angle, so four points on a circle describe that
+ * circle exactly, while points on an uneven ring follow its real outline.
+ */
+object PolarContour {
+
+    /** Radius as a function of angle: sorted (angle, radius) pairs. */
+    private fun polar(cx: Double, cy: Double, points: List<Point>): List<Pair<Double, Double>> =
+        points.map { kotlin.math.atan2(it.y - cy, it.x - cx) to hypot(it.x - cx, it.y - cy) }.sortedBy { it.first }
+
+    /** Interpolated radius at angle [a] (radians). */
+    fun radiusAt(cx: Double, cy: Double, points: List<Point>, a: Double): Double = radiusAt(polar(cx, cy, points), a)
+
+    private fun radiusAt(p: List<Pair<Double, Double>>, a: Double): Double {
+        if (p.size == 1) return p[0].second
+        val twoPi = 2 * Math.PI
+        var t = a
+        while (t < p[0].first) t += twoPi
+        while (t >= p[0].first + twoPi) t -= twoPi
+        for (i in p.indices) {
+            val (a0, r0) = p[i]
+            val (a1raw, r1) = p[(i + 1) % p.size]
+            val a1 = if (i + 1 < p.size) a1raw else a1raw + twoPi
+            if (t >= a0 && t <= a1) {
+                val f = if (a1 - a0 < 1e-12) 0.0 else (t - a0) / (a1 - a0)
+                return r0 + (r1 - r0) * f
+            }
+        }
+        return p.last().second
+    }
+
+    /** Points of the outline, [n] equal angular steps (for drawing). */
+    fun outline(cx: Double, cy: Double, points: List<Point>, n: Int = 90): List<Point> {
+        val p = polar(cx, cy, points)
+        return List(n) { k ->
+            val a = 2 * Math.PI * k / n
+            val r = radiusAt(p, a)
+            Point(cx + r * kotlin.math.cos(a), cy + r * kotlin.math.sin(a))
+        }
+    }
+
+    /**
+     * Radius of the circle with the same area as the contour: area = ½∮r²dθ, so the equivalent
+     * radius is the root-mean-square radius over angle.
+     */
+    fun equivalentRadius(cx: Double, cy: Double, points: List<Point>, samples: Int = 720): Double {
+        if (points.isEmpty()) return 0.0
+        val p = polar(cx, cy, points)
+        var s = 0.0
+        for (k in 0 until samples) { val r = radiusAt(p, 2 * Math.PI * k / samples); s += r * r }
+        return sqrt(s / samples)
+    }
+}

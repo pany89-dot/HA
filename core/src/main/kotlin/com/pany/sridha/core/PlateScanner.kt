@@ -30,8 +30,15 @@ class PlateScanner(
 
     data class Seed(val x: Double, val y: Double, val r: Double)
 
-    /** [zone] — outer ring boundary; [well] — punched hole; [quality] — fraction of rays that fit. */
-    data class Found(val zone: Circle, val well: Circle?, val quality: Double)
+    /**
+     * [zone] — circle fitted to the outer ring boundary; [well] — punched hole; [quality] — fraction
+     * of rays that fit; [contour] — points on the real (possibly uneven) outline, empty if unknown.
+     */
+    data class Found(val zone: Circle, val well: Circle?, val quality: Double, val contour: List<Point> = emptyList()) {
+        /** Radius of the circle with the same area as the real outline. */
+        val equivalentRadius: Double
+            get() = if (contour.size >= 3) PolarContour.equivalentRadius(zone.cx, zone.cy, contour) else zone.r
+    }
 
     /**
      * @param ringImage channel where the ring is darker than the gel (red or luminance)
@@ -41,10 +48,13 @@ class PlateScanner(
     fun scan(ringImage: Raster, holeImage: Raster, ringPolarity: Int = 1): List<Found> {
         val holes = findHoles(holeImage)
         if (holes.size < 2) return scanZones(ringImage, if (ringPolarity == 0) 0 else ringPolarity, holeImage)
+        // Search radius from the typical hole spacing on the plate (robust to a single odd neighbour).
+        val spacing = Stats.median(holes.map { h ->
+            holes.filter { it !== h }.minOf { hypot(it.cx - h.cx, it.cy - h.cy) }
+        })
         return holes.map { h ->
-            val nn = holes.filter { it !== h }.minOfOrNull { hypot(it.cx - h.cx, it.cy - h.cy) } ?: (8 * h.r)
-            val ring = ringAround(ringImage, h, 0.55 * nn, ringPolarity)
-            if (ring != null) Found(ring.circle, h, ring.quality) else Found(h, h, 0.0)
+            val ring = ringAround(ringImage, h, 0.55 * spacing, ringPolarity)
+            if (ring != null) Found(ring.circle, h, ring.quality, ring.contour(CONTOUR_POINTS)) else Found(h, h, 0.0)
         }
     }
 
@@ -54,10 +64,10 @@ class PlateScanner(
             ?.circle?.takeIf { hypot(it.cx - x, it.cy - y) < it.r }
         if (hole != null) {
             val ring = ringAround(ringImage, hole, maxRadius, ringPolarity)
-            return if (ring != null) Found(ring.circle, hole, ring.quality) else Found(hole, hole, 0.0)
+            return if (ring != null) Found(ring.circle, hole, ring.quality, ring.contour(CONTOUR_POINTS)) else Found(hole, hole, 0.0)
         }
         val z = detectZone(ringImage, holeImage, x, y, maxRadius, ringPolarity) ?: return null
-        return Found(z.first.circle, z.second, z.first.quality)
+        return Found(z.first.circle, z.second, z.first.quality, z.first.contour(CONTOUR_POINTS))
     }
 
     /** Light punched hole inside a ring marked by hand; null if none is visible. */
@@ -99,11 +109,13 @@ class PlateScanner(
             val h = res.circle
             if (h.r < 0.6 * c.r || h.r > 1.7 * c.r + 2) continue
             if (hypot(h.cx - c.cx, h.cy - c.cy) > 0.6 * h.r) continue
-            // A punched hole is round (its edge fits on nearly every ray) and lies wholly in the frame.
-            if (res.quality < 0.7) continue
+            // A punched hole lies wholly in the frame, is lighter than its surroundings in (almost)
+            // every direction and is round. Roundness may be lower when a marker line or a crack
+            // touches the edge, provided the hole is clearly light all around.
             if (h.cx - h.r < 1 || h.cy - h.r < 1 || h.cx + h.r > holeImage.width - 2 || h.cy + h.r > holeImage.height - 2) continue
-            // ...and it is lighter than its surroundings in (almost) every direction.
-            if (surroundContrast(holeImage, h) < 0.8) continue
+            if (res.quality < 0.4) continue
+            val contrast = surroundContrast(holeImage, h)
+            if (contrast < 0.8 || (res.quality < 0.55 && contrast < 0.9)) continue
             if (holes.any { hypot(it.first.cx - h.cx, it.first.cy - h.cy) < max(it.first.r, h.r) }) continue
             holes += h to score
         }
@@ -113,7 +125,23 @@ class PlateScanner(
         val best = holes.maxBy { (h, _) -> holes.filter { abs(it.first.r / h.r - 1) <= 0.15 }.sumOf { it.second } }.first
         val cluster = holes.map { it.first }.filter { abs(it.r / best.r - 1) <= 0.15 }
         val med = Stats.median(cluster.map { it.r })
-        return holes.map { it.first }.filter { it.r in 0.8 * med..1.25 * med }
+        return onGrid(holes.map { it.first }.filter { it.r in 0.8 * med..1.25 * med })
+    }
+
+    /**
+     * Holes are punched in rows and columns. A "hole" that forms a row or a column on its own,
+     * while the real rows and columns have several holes, is a light patch of gel, not a hole.
+     */
+    private fun onGrid(holes: List<Circle>): List<Circle> {
+        if (holes.size < 6) return holes
+        val grid = GridAssign.assign(holes)
+        val rowSize = IntArray(grid.rows); val colSize = IntArray(grid.cols)
+        for (i in holes.indices) { rowSize[grid.row[i]]++; colSize[grid.col[i]]++ }
+        val typicalRow = Stats.median(rowSize.map { it.toDouble() })
+        val typicalCol = Stats.median(colSize.map { it.toDouble() })
+        return holes.indices.filter { i ->
+            !(typicalRow >= 3 && rowSize[grid.row[i]] == 1) && !(typicalCol >= 3 && colSize[grid.col[i]] == 1)
+        }.map { holes[it] }
     }
 
     /**
@@ -243,7 +271,7 @@ class PlateScanner(
         if (unique.isEmpty()) return emptyList()
         val medR = Stats.median(unique.map { it.first.circle.r })
         val found = unique.filter { it.first.circle.r in 0.4 * medR..2.5 * medR }
-            .map { (z, well) -> Found(z.circle, well, z.quality) }
+            .map { (z, well) -> Found(z.circle, well, z.quality, z.contour(CONTOUR_POINTS)) }
         // Real zones surround a punched well; when most do, drop the ones without (artefacts).
         val withWell = found.count { it.well != null }
         return if (withWell * 2 > found.size) found.filter { it.well != null } else found
@@ -469,5 +497,10 @@ class PlateScanner(
             d[i] = v
         }
         return d
+    }
+
+    companion object {
+        /** Editable edge points per detected ring (every 30°). */
+        const val CONTOUR_POINTS = 12
     }
 }

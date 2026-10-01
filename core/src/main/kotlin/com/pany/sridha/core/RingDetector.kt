@@ -59,7 +59,30 @@ class RingDetector(private val params: Params = Params()) {
         val quality: Double,
         /** +1 if the ring is darker than the surrounding gel, −1 if lighter. */
         val polarity: Int,
-    )
+        /**
+         * The real (possibly uneven) outline: edge radius on every ray from the circle centre,
+         * spikes from scratches replaced by the local median. Index k is angle 2πk/rays.
+         */
+        val radii: DoubleArray = DoubleArray(0),
+    ) {
+        /** [n] outline points at equal angles (interpolated from [radii]). */
+        fun contour(n: Int = 12): List<Point> {
+            if (radii.isEmpty()) return List(n) { k ->
+                val a = 2 * PI * k / n; Point(circle.cx + circle.r * cos(a), circle.cy + circle.r * sin(a))
+            }
+            return List(n) { k ->
+                val pos = k.toDouble() * radii.size / n
+                val i0 = pos.toInt() % radii.size; val i1 = (i0 + 1) % radii.size
+                val r = radii[i0] + (radii[i1] - radii[i0]) * (pos - pos.toInt())
+                val a = 2 * PI * k / n
+                Point(circle.cx + r * cos(a), circle.cy + r * sin(a))
+            }
+        }
+
+        /** Radius of the circle with the same area as the real outline. */
+        val equivalentRadius: Double
+            get() = if (radii.isEmpty()) circle.r else sqrt(radii.sumOf { it * it } / radii.size)
+    }
 
     /**
      * @param seedX seed x in image pixels (should be inside the ring, ideally near the well)
@@ -104,7 +127,9 @@ class RingDetector(private val params: Params = Params()) {
             if (found.size < 8) return last
             val medStrength = Stats.median(strengths)
             val strong = found.indices.filter { strengths[it] >= 0.3 * medStrength }.map { found[it] }
-            val (circle, inliers) = CircleFit.robust(strong) ?: return last
+            // Tolerance grows with size: real holes and rings are slightly oval (camera tilt,
+            // uneven punching), which must not count as outliers on large objects.
+            val (circle, inliers) = CircleFit.robust(strong, minTolerance = max(0.75, 0.04 * radius)) ?: return last
             if (circle.r < minRadius || circle.r > rMax * 1.2) return last
 
             val quality = inliers.size.toDouble() / params.rays
@@ -115,7 +140,22 @@ class RingDetector(private val params: Params = Params()) {
             cx = circle.cx; cy = circle.cy; radius = circle.r
             if (iter > 0 && shift < 0.2 && dr < 0.2) break
         }
-        return last?.takeIf { it.quality >= params.minInliers }
+        val res = last?.takeIf { it.quality >= params.minInliers } ?: return null
+        return res.copy(radii = outlineRadii(image, res.circle, rMax, res.polarity))
+    }
+
+    /** Edge radius on every ray around the fitted circle; outliers replaced by the local median. */
+    private fun outlineRadii(image: Raster, c: Circle, rMax: Int, pol: Int): DoubleArray {
+        val rays = castRays(image, c.cx, c.cy, min(rMax, (c.r * 1.3 + 4).toInt()))
+        val w = max(2.0, 0.15 * c.r)
+        val raw = DoubleArray(rays.size) { i -> locateOnRay(rays[i], c.r - w, c.r + w, pol)?.first ?: Double.NaN }
+        val n = raw.size
+        return DoubleArray(n) { i ->
+            val neigh = (-3..3).map { raw[(i + it + n) % n] }.filter { !it.isNaN() }
+            val med = if (neigh.isEmpty()) c.r else Stats.median(neigh)
+            val v = raw[i]
+            if (v.isNaN() || abs(v - med) > max(1.0, 0.06 * c.r)) med else v
+        }
     }
 
     private class Ray(val cos: Double, val sin: Double, val deriv: DoubleArray)

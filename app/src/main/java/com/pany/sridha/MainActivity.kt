@@ -234,7 +234,8 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
                 val order = found.indices.sortedWith(compareBy({ grid.row[it] }, { grid.col[it] }))
                 for (i in order) {
                     val f = found[i]
-                    Session.rings += RingMark(0, f.zone.cx, f.zone.cy, f.zone.r, "Стандарт", Role.STANDARD, 1.0, f.well?.r)
+                    Session.rings += RingMark(0, f.zone.cx, f.zone.cy, f.zone.r, "Стандарт", Role.STANDARD, 1.0, f.well?.r,
+                        f.contour.takeIf { it.size >= 3 })
                 }
                 Session.renumber()
                 plate.selected = null
@@ -292,7 +293,8 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
                 }
                 val c = found.zone
                 val (group, role, dose) = Session.defaultsForNew()
-                addRing(RingMark(Session.newId(), c.cx, c.cy, c.r, group, role, dose, found.well?.r))
+                addRing(RingMark(Session.newId(), c.cx, c.cy, c.r, group, role, dose, found.well?.r,
+                    found.contour.takeIf { it.size >= 3 }))
             }
         }
     }
@@ -399,12 +401,13 @@ class MainActivity : AppCompatActivity(), PlateView.Listener {
             val found = detectAt(ring.cx, ring.cy, ring.r * 1.6 + 10)
             val res = found?.zone
             val well = found?.well
+            val contour = found?.contour
             runOnUiThread {
                 showBusy(false)
                 if (res == null) {
                     Snackbar.make(plate, R.string.detect_failed, Snackbar.LENGTH_LONG).show()
                 } else {
-                    ring.setCircle(res.cx, res.cy, res.r)
+                    if (contour != null && contour.size >= 3) ring.setPoints(contour) else ring.setCircle(res.cx, res.cy, res.r)
                     if (well != null) ring.wellR = well.r
                     changed()
                 }

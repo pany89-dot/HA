@@ -8,6 +8,7 @@ import com.pany.sridha.core.CircleFit
 import com.pany.sridha.core.DoseParser
 import com.pany.sridha.core.Fmt
 import com.pany.sridha.core.PlateTemplate
+import com.pany.sridha.core.PolarContour
 import com.pany.sridha.core.Point
 import com.pany.sridha.core.Role
 import com.pany.sridha.core.Stats
@@ -20,9 +21,9 @@ import java.io.File
 /**
  * A ring marked on the plate photo. Coordinates are in bitmap pixels.
  *
- * The ring is defined by points on its edge (at least 3; by default 4 — left, top, right, bottom).
- * Each point can be moved on its own, so an uneven ring is fitted by least squares through
- * the edges marked on every side.
+ * The ring is defined by points on its edge (at least 3; 12 for automatically found rings).
+ * Each point can be moved on its own. Between the points the outline follows the angle, so an
+ * uneven ring keeps its real shape; [r] is the radius of the circle with the same area.
  */
 class RingMark(
     val id: Int,
@@ -48,6 +49,15 @@ class RingMark(
         this.cx = cx; this.cy = cy; this.r = r
         points.clear(); points += axisPoints(cx, cy, r)
     }
+
+    /** Replaces the edge points (e.g. by a freshly detected outline). */
+    fun setPoints(newPoints: List<Point>) {
+        if (newPoints.size < 3) return
+        points.clear(); points += newPoints; refit()
+    }
+
+    /** Outline for drawing. */
+    fun outline(n: Int = 90): List<Point> = PolarContour.outline(cx, cy, points, n)
 
     fun movePoint(i: Int, x: Double, y: Double) { points[i] = Point(x, y); refit() }
 
@@ -80,7 +90,9 @@ class RingMark(
     fun copy(id: Int) = RingMark(id, cx, cy, r, group, role, dose, wellR, points)
 
     private fun refit() {
-        CircleFit.kasa(points)?.let { cx = it.cx; cy = it.cy; r = it.r }
+        val c = CircleFit.kasa(points) ?: return
+        cx = c.cx; cy = c.cy
+        r = PolarContour.equivalentRadius(cx, cy, points)
     }
 
     companion object {

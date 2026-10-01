@@ -166,7 +166,7 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
             val sel = r === selected
             ringPaint.color = if (sel) colSel else if (r.role == Role.STANDARD) colStd else colSmp
             ringPaint.strokeWidth = (if (sel) 2.5f else 1.6f) * density / s
-            canvas.drawCircle(r.cx.toFloat(), r.cy.toFloat(), r.r.toFloat(), ringPaint)
+            canvas.drawPath(outlinePath(r), ringPaint)
             r.wellR?.let { wr ->
                 wellPaint.strokeWidth = 1f * density / s
                 canvas.drawCircle(r.cx.toFloat(), r.cy.toFloat(), wr.toFloat(), wellPaint)
@@ -220,6 +220,16 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
         loupe?.let { drawLoupe(canvas, b, it) }
     }
 
+    /** The ring's real outline through its edge points (a circle for four points on a circle). */
+    private fun outlinePath(r: RingMark): Path {
+        val path = Path()
+        r.outline().forEachIndexed { i, p ->
+            if (i == 0) path.moveTo(p.x.toFloat(), p.y.toFloat()) else path.lineTo(p.x.toFloat(), p.y.toFloat())
+        }
+        path.close()
+        return path
+    }
+
     /** Magnified view of the area under the finger, shown in the corner away from it. */
     private var loupe: Point? = null
 
@@ -247,7 +257,7 @@ class PlateView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
         for (r in rings) {
             ringPaint.color = if (r === selected) colSel else if (r.role == Role.STANDARD) colStd else colSmp
             ringPaint.strokeWidth = 1.5f / zoom
-            canvas.drawCircle(r.cx.toFloat(), r.cy.toFloat(), r.r.toFloat(), ringPaint)
+            canvas.drawPath(outlinePath(r), ringPaint)
         }
         canvas.restore()
         val arm = 12 * density

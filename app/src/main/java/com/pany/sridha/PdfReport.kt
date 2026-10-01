@@ -366,7 +366,12 @@ object Annotator {
         val digits = if (Session.mmPerPx != null) 2 else 0
         for (r in Session.rings) {
             ring.color = ctx.getColor(if (r.role == Role.STANDARD) R.color.ring_standard else R.color.ring_sample)
-            c.drawCircle(r.cx.toFloat(), r.cy.toFloat(), r.r.toFloat(), ring)
+            val path = android.graphics.Path()
+            r.outline().forEachIndexed { i, p ->
+                if (i == 0) path.moveTo(p.x.toFloat(), p.y.toFloat()) else path.lineTo(p.x.toFloat(), p.y.toFloat())
+            }
+            path.close()
+            c.drawPath(path, ring)
             r.wellR?.let { c.drawCircle(r.cx.toFloat(), r.cy.toFloat(), it.toFloat(), well) }
             val l1 = "#${r.id} ${r.group} ${DoseParser.format(r.dose)}"
             val l2 = "D=${Fmt.num(Session.diameterInUnits(r), digits)} ${Session.unit}"
